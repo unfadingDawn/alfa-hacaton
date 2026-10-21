@@ -1,0 +1,512 @@
+openapi: 3.0.3
+info:
+  title: AlfaInsight API
+  version: 0.1.0
+  description: |
+    Персональная новостная аналитика для руководителей бизнеса.
+    Авторизация — JWT в HttpOnly cookie `ai_access` (15 мин) и refresh-токен в `ai_refresh`.
+    Все ошибки возвращаются в формате `{"error": {"code", "message", "fields"}}`.
+    Запросы к языковой модели выполняются только эндпоинтами `POST /articles/{id}/analyze` и `POST /feed/rank`.
+servers:
+  - url: /api
+security:
+  - cookieAuth: []
+tags:
+  - name: auth
+  - name: profile
+  - name: companies
+  - name: news
+  - name: analysis
+  - name: analytics
+paths:
+  /health:
+    get:
+      tags: [analytics]
+      security: []
+      summary: Проверка доступности API и БД
+      responses:
+        '200': {description: OK}
+        '503': {$ref: '#/components/responses/Error'}
+  /auth/register:
+    post:
+      tags: [auth]
+      security: []
+      summary: Регистрация (устанавливает cookie сессии)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password, full_name]
+              properties:
+                email: {type: string, format: email}
+                password: {type: string, minLength: 8, description: Буквы и цифры}
+                full_name: {type: string, minLength: 2, maxLength: 120}
+      responses:
+        '201': {description: Создан}
+        '422': {$ref: '#/components/responses/Validation'}
+        '429': {$ref: '#/components/responses/Error'}
+  /auth/login:
+    post:
+      tags: [auth]
+      security: []
+      summary: Вход по email и паролю
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: {type: string}
+                password: {type: string}
+      responses:
+        '200': {description: OK, headers: {Set-Cookie: {schema: {type: string}}}}
+        '401': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+  /auth/refresh:
+    post:
+      tags: [auth]
+      security: []
+      summary: Обновление access-токена по refresh-cookie (с ротацией)
+      responses:
+        '200': {description: OK}
+        '401': {$ref: '#/components/responses/Error'}
+  /auth/logout:
+    post:
+      tags: [auth]
+      security: []
+      summary: Выход (отзыв refresh-токена и очистка cookie)
+      responses:
+        '200': {description: OK}
+  /me:
+    get:
+      tags: [profile]
+      summary: Текущий пользователь, интересы, компании, статус онбординга
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Me'}}}}
+        '401': {$ref: '#/components/responses/Error'}
+  /me/profile:
+    put:
+      tags: [profile]
+      summary: Имя, роль (линза персонализации), должность, рабочие интересы
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [full_name, role_code]
+              properties:
+                full_name: {type: string}
+                role_code: {type: string, enum: [owner, ceo, cfo, chief_accountant, treasurer, procurement, sales, other_c_level, other]}
+                position_title: {type: string, maxLength: 120}
+                work_focus: {type: string, maxLength: 1000}
+      responses:
+        '200': {description: OK}
+        '422': {$ref: '#/components/responses/Validation'}
+  /me/interests:
+    put:
+      tags: [profile]
+      summary: Темы интересов с весом 1..3
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                topics:
+                  type: array
+                  items: {type: object, properties: {code: {type: string}, weight: {type: integer, minimum: 1, maximum: 3}}}
+      responses:
+        '200': {description: OK}
+        '422': {$ref: '#/components/responses/Validation'}
+  /me/personalization:
+    put:
+      tags: [profile]
+      summary: Настройки персонализации
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {$ref: '#/components/schemas/Personalization'}
+      responses:
+        '200': {description: OK}
+        '422': {$ref: '#/components/responses/Validation'}
+  /me/companies:
+    post:
+      tags: [profile]
+      summary: Привязать пользователя к компании из датасета и сохранить уточнения
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [company_id]
+              properties:
+                company_id: {type: string, example: U_1465}
+                display_name: {type: string}
+                profile: {$ref: '#/components/schemas/UserCompanyProfile'}
+      responses:
+        '200': {description: Профиль компании, content: {application/json: {schema: {$ref: '#/components/schemas/CompanyProfile'}}}}
+        '422': {$ref: '#/components/responses/Validation'}
+  /me/onboarding/complete:
+    post:
+      tags: [profile]
+      summary: Завершить онбординг (проверяет роль и компанию)
+      responses:
+        '200': {description: OK}
+        '422': {$ref: '#/components/responses/Validation'}
+  /topics:
+    get: {tags: [profile], summary: Справочник тем, responses: {'200': {description: OK}}}
+  /roles:
+    get: {tags: [profile], summary: Роли и их фокус, responses: {'200': {description: OK}}}
+  /companies/search:
+    get:
+      tags: [companies]
+      summary: Поиск компании в обезличенном датасете (для онбординга)
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: ID, код или название ОКВЭД, название}
+        - {name: region, in: query, schema: {type: string}}
+        - {name: min_revenue, in: query, schema: {type: number}, description: 'Например 15000000000 — крупный бизнес'}
+        - {name: limit, in: query, schema: {type: integer, maximum: 50}}
+        - {name: offset, in: query, schema: {type: integer}}
+      responses:
+        '200': {description: OK}
+  /companies/regions:
+    get: {tags: [companies], summary: Регионы с числом компаний, responses: {'200': {description: OK}}}
+  /companies/{id}/preview:
+    get:
+      tags: [companies]
+      summary: Исходные поля компании из датасета (без связей)
+      parameters: [{$ref: '#/components/parameters/CompanyID'}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/CompanyProfile'}}}}
+        '404': {$ref: '#/components/responses/Error'}
+  /companies/{id}:
+    get:
+      tags: [companies]
+      summary: Полный профиль компании (только для участников компании)
+      parameters: [{$ref: '#/components/parameters/CompanyID'}]
+      responses:
+        '200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/CompanyProfile'}}}}
+        '403': {$ref: '#/components/responses/Error'}
+    put:
+      tags: [companies]
+      summary: Уточнить сведения о компании (исходные поля не меняются)
+      parameters: [{$ref: '#/components/parameters/CompanyID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                display_name: {type: string}
+                profile: {$ref: '#/components/schemas/UserCompanyProfile'}
+      responses:
+        '200': {description: OK}
+        '403': {$ref: '#/components/responses/Error'}
+        '422': {$ref: '#/components/responses/Validation'}
+  /feed:
+    get:
+      tags: [news]
+      summary: Персональная лента (без запросов к модели)
+      parameters:
+        - {name: q, in: query, schema: {type: string}, description: Полнотекстовый поиск}
+        - {name: topic, in: query, schema: {type: string}}
+        - {name: min_importance, in: query, schema: {type: string, enum: [low, medium, high, critical]}}
+        - {name: impact, in: query, schema: {type: string, enum: [risk, opportunity, mixed, neutral]}}
+        - {name: period, in: query, schema: {type: string, enum: [1d, 7d, 30d, 90d, all]}}
+        - {name: source_kind, in: query, schema: {type: string, enum: [rss, alfa_research, user_submitted]}}
+        - {name: saved, in: query, schema: {type: boolean}}
+        - {name: sort, in: query, schema: {type: string, enum: [date, relevance, importance]}}
+        - {name: limit, in: query, schema: {type: integer, maximum: 100}}
+        - {name: offset, in: query, schema: {type: integer}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  items: {type: array, items: {$ref: '#/components/schemas/FeedItem'}}
+                  total: {type: integer}
+        '409': {$ref: '#/components/responses/Error'}
+  /feed/rank:
+    post:
+      tags: [analysis]
+      summary: Оценить моделью до 8 новостей ленты (ровно один запрос к модели)
+      requestBody:
+        content:
+          application/json:
+            schema: {type: object, properties: {limit: {type: integer, maximum: 8}}}
+      responses:
+        '200': {description: OK}
+        '429': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /articles:
+    post:
+      tags: [news]
+      summary: Добавить новость вручную для проверки анализа (видна только автору)
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [title, text]
+              properties:
+                title: {type: string}
+                text: {type: string, minLength: 50}
+                url: {type: string}
+                published_at: {type: string, format: date}
+      responses:
+        '201': {description: Создано}
+        '422': {$ref: '#/components/responses/Validation'}
+  /articles/{id}:
+    get:
+      tags: [news]
+      summary: Новость, темы, классификация, оценки и сохранённый анализ с трассой
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200': {description: OK}
+        '404': {$ref: '#/components/responses/Error'}
+  /articles/{id}/analyze:
+    post:
+      tags: [analysis]
+      summary: Персональный анализ агентом (кэшируется; force=true — пересчитать)
+      description: |
+        Шаги: классификация → план → поиск в аналитике банка и связанных новостях → черновик →
+        самопроверка → (при замечаниях) одна доработка. Обычно 4–5 запросов к модели.
+      parameters:
+        - {$ref: '#/components/parameters/ArticleID'}
+        - {name: force, in: query, schema: {type: boolean}}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cached: {type: boolean}
+                  analysis: {type: object, properties: {result: {type: object, properties: {insight: {$ref: '#/components/schemas/Insight'}}}}}
+                  run: {$ref: '#/components/schemas/Run'}
+        '409': {$ref: '#/components/responses/Error'}
+        '429': {$ref: '#/components/responses/Error'}
+        '502': {$ref: '#/components/responses/Error'}
+        '503': {$ref: '#/components/responses/Error'}
+  /articles/{id}/save:
+    post:
+      tags: [news]
+      summary: Сохранить новость
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses: {'200': {description: OK}, '404': {$ref: '#/components/responses/Error'}}
+    delete:
+      tags: [news]
+      summary: Удалить из сохранённых
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses: {'200': {description: OK}}
+  /articles/{id}/feedback:
+    post:
+      tags: [analysis]
+      summary: Оценка полезности анализа
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema: {type: object, required: [rating], properties: {rating: {type: integer, enum: [-1, 1]}, comment: {type: string}}}
+      responses: {'200': {description: OK}, '422': {$ref: '#/components/responses/Validation'}}
+  /runs/{id}:
+    get:
+      tags: [analysis]
+      summary: Трасса запуска агента (только свои запуски)
+      parameters: [{name: id, in: path, required: true, schema: {type: string, format: uuid}}]
+      responses: {'200': {description: OK, content: {application/json: {schema: {$ref: '#/components/schemas/Run'}}}}, '404': {$ref: '#/components/responses/Error'}}
+  /research:
+    get: {tags: [news], summary: Аналитические материалы Альфа-Банка, responses: {'200': {description: OK}}}
+  /research/{id}:
+    get:
+      tags: [news]
+      summary: Материал и его фрагменты (с номерами страниц)
+      parameters: [{name: id, in: path, required: true, schema: {type: integer}}]
+      responses: {'200': {description: OK}, '404': {$ref: '#/components/responses/Error'}}
+  /sources:
+    get: {tags: [news], summary: Источники и статус последнего опроса, responses: {'200': {description: OK}}}
+  /dashboard:
+    get: {tags: [analytics], summary: Персональная главная, responses: {'200': {description: OK}, '409': {$ref: '#/components/responses/Error'}}}
+  /analytics:
+    get:
+      tags: [analytics]
+      summary: Сводные показатели по реальным данным
+      parameters: [{name: period, in: query, schema: {type: string, enum: [7d, 30d, 90d]}}]
+      responses: {'200': {description: OK}}
+  /system/status:
+    get: {tags: [analytics], summary: Статус интеграций, лимитов модели и импорта данных, responses: {'200': {description: OK}}}
+components:
+  securitySchemes:
+    cookieAuth: {type: apiKey, in: cookie, name: ai_access}
+  parameters:
+    CompanyID: {name: id, in: path, required: true, schema: {type: string}, example: U_1465}
+    ArticleID: {name: id, in: path, required: true, schema: {type: string, format: uuid}}
+  responses:
+    Error:
+      description: Ошибка
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+    Validation:
+      description: Ошибка валидации полей
+      content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
+  schemas:
+    Error:
+      type: object
+      properties:
+        error:
+          type: object
+          properties:
+            code: {type: string, example: llm_budget_exceeded}
+            message: {type: string}
+            fields: {type: object, additionalProperties: {type: string}}
+    Personalization:
+      type: object
+      properties:
+        min_relevance: {type: integer, minimum: 0, maximum: 100}
+        include_research: {type: boolean}
+        horizon: {type: string, enum: [short, medium, long]}
+        detail: {type: string, enum: [brief, detailed]}
+    Me:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        email: {type: string}
+        full_name: {type: string}
+        role_code: {type: string}
+        position_title: {type: string}
+        work_focus: {type: string}
+        onboarding_completed: {type: boolean}
+        personalization: {$ref: '#/components/schemas/Personalization'}
+        interests: {type: array, items: {type: object}}
+        companies: {type: array, items: {type: object}}
+    UserCompanyProfile:
+      type: object
+      properties:
+        description: {type: string}
+        products: {type: string}
+        markets: {type: string}
+        suppliers: {type: string}
+        priorities: {type: array, items: {type: string}}
+        notes: {type: string}
+    Fact:
+      type: object
+      properties:
+        id: {type: string, example: 'C:has_loan'}
+        label: {type: string}
+        value: {type: string}
+        source: {type: string, example: 'df_Uid_data_hack.csv: CL_PRODUCT_LOA_MARK'}
+    CompanyProfile:
+      type: object
+      properties:
+        id: {type: string}
+        display_name: {type: string}
+        okved_code: {type: string}
+        okved_name: {type: string}
+        region: {type: string}
+        revenue: {type: number, nullable: true}
+        size_segment: {type: string}
+        is_large: {type: boolean}
+        facts: {type: array, items: {$ref: '#/components/schemas/Fact'}}
+        exposures: {type: array, items: {type: object}}
+        relations: {type: object, nullable: true}
+        data_gaps: {type: array, items: {type: string}}
+        user_profile: {$ref: '#/components/schemas/UserCompanyProfile'}
+    FeedItem:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        url: {type: string}
+        title: {type: string}
+        summary: {type: string}
+        published_at: {type: string, format: date-time}
+        source: {type: object, properties: {code: {type: string}, name: {type: string}, kind: {type: string}}}
+        topics: {type: array, items: {type: object, properties: {code: {type: string}, name: {type: string}, method: {type: string, enum: [llm, keywords, metadata]}}}}
+        is_saved: {type: boolean}
+        analysis:
+          type: object
+          nullable: true
+          properties:
+            method: {type: string, enum: [llm, rules], description: 'rules — предварительная оценка без ИИ'}
+            depth: {type: string, enum: [brief, full]}
+            relevance_score: {type: integer}
+            importance_level: {type: string}
+            impact_type: {type: string}
+            matched_topics: {type: array, items: {type: string}}
+            why_it_matters: {type: string}
+    Evidence:
+      type: object
+      properties:
+        id: {type: string, example: R42}
+        type: {type: string, enum: [article, related_news, bank_research, company_data]}
+        title: {type: string}
+        url: {type: string}
+        date: {type: string}
+        excerpt: {type: string}
+        page: {type: integer}
+    RiskOpp:
+      type: object
+      properties:
+        title: {type: string}
+        description: {type: string}
+        likelihood: {type: string, enum: [low, medium, high]}
+        horizon: {type: string, enum: [short, medium, long]}
+        basis: {type: string, enum: [fact, bank_view, model_inference]}
+        source_ids: {type: array, items: {type: string}}
+    Insight:
+      type: object
+      description: Структурированный ответ модели после валидации backend.
+      properties:
+        relevance_score: {type: integer, minimum: 0, maximum: 100}
+        importance_level: {type: string, enum: [low, medium, high, critical]}
+        impact_type: {type: string, enum: [risk, opportunity, mixed, neutral]}
+        matched_topics: {type: array, items: {type: string}}
+        what_happened:
+          type: object
+          properties:
+            summary: {type: string}
+            facts: {type: array, items: {type: object, properties: {text: {type: string}, source_ids: {type: array, items: {type: string}}}}}
+        why_it_matters: {type: string}
+        potential_impact: {type: string}
+        risks: {type: array, items: {$ref: '#/components/schemas/RiskOpp'}}
+        opportunities: {type: array, items: {$ref: '#/components/schemas/RiskOpp'}}
+        recommended_actions: {type: array, items: {type: object, properties: {action: {type: string}, rationale: {type: string}, owner: {type: string}, source_ids: {type: array, items: {type: string}}}}}
+        bank_view: {type: array, items: {type: object, properties: {text: {type: string}, source_ids: {type: array, items: {type: string}}}}}
+        assumptions: {type: array, items: {type: string}}
+        uncertainty_notes: {type: array, items: {type: string}}
+        evidence_sources: {type: array, items: {$ref: '#/components/schemas/Evidence'}}
+        validation_notes: {type: array, items: {type: string}}
+    Run:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        status: {type: string, enum: [running, succeeded, failed]}
+        models: {type: array, items: {type: string}}
+        prompt_tokens: {type: integer}
+        completion_tokens: {type: integer}
+        steps:
+          type: array
+          items:
+            type: object
+            properties:
+              name: {type: string}
+              title: {type: string}
+              model: {type: string}
+              status: {type: string}
+              duration_ms: {type: integer}
+              tokens: {type: integer}
+              cached: {type: boolean}
+              summary: {type: string}

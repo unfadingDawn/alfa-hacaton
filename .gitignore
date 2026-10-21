@@ -1,0 +1,20 @@
+# Секреты
+.env
+.env.*
+!.env.example
+
+# Данные кейса (CSV и PDF не коммитятся)
+data/raw/
+*.pdf
+
+# Сборка
+frontend/node_modules/
+frontend/.next/
+backend/bin/
+*.log
+.DS_Store
+
+# Служебная папка синхронизации
+.sync/
+*.tsbuildinfo
+frontend/next-env.d.ts

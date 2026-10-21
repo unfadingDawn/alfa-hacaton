@@ -1,0 +1,239 @@
+// Package analytics — персональная главная, сводные показатели и статус системы.
+// Все показатели считаются по реальным данным БД; если данных нет — это
+// явно сообщается в ответе (поля *_note / sufficient=false).
+package analytics
+
+import (
+	"fmt"
+	"log/slog"
+	"net/http"
+	"net/url"
+	"time"
+
+	"github.com/go-chi/chi/v5"
+
+	"github.com/alfainsight/backend/internal/agent"
+	"github.com/alfainsight/backend/internal/auth"
+	"github.com/alfainsight/backend/internal/db/dbq"
+	"github.com/alfainsight/backend/internal/insights"
+	"github.com/alfainsight/backend/internal/llm"
+	"github.com/alfainsight/backend/internal/platform/config"
+	"github.com/alfainsight/backend/internal/platform/httpx"
+)
+
+type Handler struct {
+	Q     *dbq.Queries
+	Agent *agent.Agent
+	LLM   *llm.Client
+	Cfg   config.Config
+	Log   *slog.Logger
+}
+
+func (h *Handler) Routes(r chi.Router) {
+	r.Get("/dashboard", h.dashboard)
+	r.Get("/analytics", h.analytics)
+	r.Get("/system/status", h.status)
+}
+
+func (h *Handler) dashboard(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	uid := auth.UserID(ctx)
+	if _, err := h.Agent.ScoreByRules(ctx, uid); err != nil {
+		insights.WriteAgentError(w, h.Log, err)
+		return
+	}
+	week := time.Now().AddDate(0, 0, -7)
+	top, err := h.Q.ListFeed(ctx, dbq.ListFeedParams{UserID: uid, Sort: "relevance", Since: &week, Lim: 6})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "dashboard top")
+		return
+	}
+	topItems, err := insights.BuildFeedItems(ctx, h.Q, top)
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "dashboard items")
+		return
+	}
+	// Связанные с компанией: совпадение тем с профилем компании/роли.
+	related := []insights.FeedItem{}
+	seen := map[string]bool{}
+	for _, it := range topItems {
+		seen[it.ID.String()] = true
+	}
+	more, err := h.Q.ListFeed(ctx, dbq.ListFeedParams{UserID: uid, Sort: "relevance", Since: ptr(time.Now().AddDate(0, 0, -30)), Lim: 30})
+	if err == nil {
+		items, _ := insights.BuildFeedItems(ctx, h.Q, more)
+		for _, it := range items {
+			if !seen[it.ID.String()] && it.Analysis != nil && len(it.Analysis.MatchedTopics) > 0 && len(related) < 5 {
+				related = append(related, it)
+			}
+		}
+	}
+	// Рыночная ситуация: официальные сообщения Банка России и аналитика Альфа-Банка.
+	research := "alfa_research"
+	bank, _ := h.Q.ListFeed(ctx, dbq.ListFeedParams{UserID: uid, Sort: "date", SourceKind: &research, Lim: 3})
+	bankItems, _ := insights.BuildFeedItems(ctx, h.Q, bank)
+	cbr, _ := h.Q.ListMarketNews(ctx, dbq.ListMarketNewsParams{UserID: uid, Lim: 4})
+	cbrItems, _ := insights.BuildFeedItems(ctx, h.Q, marketRows(cbr))
+
+	ro, err := h.Q.UserTopRisksAndOpportunities(ctx, dbq.UserTopRisksAndOpportunitiesParams{UserID: uid, Since: time.Now().AddDate(0, 0, -30), Lim: 12})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "risks")
+		return
+	}
+	risks, opps := []map[string]any{}, []map[string]any{}
+	for _, x := range ro {
+		item := map[string]any{"article_id": x.ArticleID, "article_title": x.Title, "title": x.ItemTitle,
+			"description": x.ItemDescription, "importance_level": x.ImportanceLevel}
+		if x.Kind == "risk" && len(risks) < 4 {
+			risks = append(risks, item)
+		} else if x.Kind == "opportunity" && len(opps) < 4 {
+			opps = append(opps, item)
+		}
+	}
+	day := startOfDay(time.Now(), h.Cfg.Timezone)
+	daySum, err := h.Q.DaySummary(ctx, dbq.DaySummaryParams{UserID: uid, Since: day})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "day summary")
+		return
+	}
+	topicsToday, _ := h.Q.TopicDistribution(ctx, day)
+	summary := fmt.Sprintf("С начала дня получено новостей: %d. Высокая важность для вас: %d (из них оценено моделью: %d). Полных ИИ-анализов: %d.",
+		daySum.NewArticles, daySum.HighImportance, daySum.HighImportanceLlm, daySum.FullAnalyses)
+	if daySum.NewArticles == 0 {
+		summary = "Сегодня новых новостей из подключённых источников пока нет."
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"top_important":   topItems,
+		"company_related": related,
+		"market":          map[string]any{"bank_research": bankItems, "regulator": cbrItems},
+		"risks":           risks,
+		"opportunities":   opps,
+		"risks_note":      noteIf(len(ro) == 0, "Риски и возможности появляются после полного ИИ-анализа новостей."),
+		"day_summary":     map[string]any{"text": summary, "stats": daySum, "topics": topicsToday},
+		"llm":             h.llmBrief(),
+	})
+}
+
+func marketRows(in []dbq.ListMarketNewsRow) []dbq.ListFeedRow {
+	out := make([]dbq.ListFeedRow, 0, len(in))
+	for _, r := range in {
+		out = append(out, dbq.ListFeedRow(r))
+	}
+	return out
+}
+
+func (h *Handler) analytics(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	uid := auth.UserID(ctx)
+	days := map[string]int{"7d": 7, "30d": 30, "90d": 90}[r.URL.Query().Get("period")]
+	if days == 0 {
+		days = 30
+	}
+	since := time.Now().AddDate(0, 0, -days)
+	if _, err := h.Agent.ScoreByRules(ctx, uid); err != nil {
+		insights.WriteAgentError(w, h.Log, err)
+		return
+	}
+	dist, err := h.Q.TopicDistributionByMethod(ctx, since)
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "distribution")
+		return
+	}
+	daily, err := h.Q.DailyArticleCounts(ctx, dbq.DailyArticleCountsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "daily")
+		return
+	}
+	dailyTopics, err := h.Q.DailyTopicCounts(ctx, since)
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "daily topics")
+		return
+	}
+	matched, err := h.Q.UserMatchedTopics(ctx, dbq.UserMatchedTopicsParams{UserID: uid, MinScore: 40, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "matched")
+		return
+	}
+	impact, err := h.Q.UserImpactCounts(ctx, dbq.UserImpactCountsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "impact")
+		return
+	}
+	ro, err := h.Q.UserTopRisksAndOpportunities(ctx, dbq.UserTopRisksAndOpportunitiesParams{UserID: uid, Since: since, Lim: 20})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "ro")
+		return
+	}
+	total := 0
+	for _, d := range daily {
+		total += int(d.Total)
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"period_days":          days,
+		"articles_total":       total,
+		"topic_distribution":   dist,
+		"daily":                daily,
+		"daily_topics":         dailyTopics,
+		"company_topics":       matched,
+		"impact":               impact,
+		"risks_opportunities":  ro,
+		"sufficient":           map[string]bool{"articles": total > 0, "llm_analyses": len(impact) > 0},
+		"notes": []string{
+			"Темы статей размечены моделью (llm), по словарю без ИИ (keywords) или по названию материала банка (metadata) — см. поле method.",
+			"«Темы, которые затрагивают компанию» и распределение рисков/возможностей считаются только по оценкам модели.",
+		},
+	})
+}
+
+func (h *Handler) llmBrief() map[string]any {
+	host := ""
+	if u, err := url.Parse(h.Cfg.LLM.BaseURL); err == nil {
+		host = u.Host
+	}
+	return map[string]any{"configured": h.LLM.Configured(), "host": host, "guard": h.LLM.Guard().Status()}
+}
+
+func (h *Handler) status(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	stats, err := h.Q.DatasetStats(ctx)
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "stats")
+		return
+	}
+	issues, _ := h.Q.CountImportIssues(ctx)
+	sources, _ := h.Q.ListSources(ctx)
+	arts, _ := h.Q.ArticleStats(ctx)
+	models := []map[string]any{}
+	for role, m := range map[string]string{"fast": h.Cfg.LLM.ModelFast, "reasoning": h.Cfg.LLM.ModelReasoning, "writer": h.Cfg.LLM.ModelWriter} {
+		a, ok := llm.MatchAllowed(m)
+		models = append(models, map[string]any{"role": role, "id": m, "allowed": ok, "title": a.Title})
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"llm":            h.llmBrief(),
+		"models":         models,
+		"allowed_models": llm.Allowed,
+		"dataset":        stats,
+		"import_issues":  issues,
+		"sources":        sources,
+		"articles":       arts,
+		"background_llm": false,
+		"notes": []string{
+			"Фоновые запросы к модели отключены: анализ выполняется только по кнопке пользователя.",
+			"Предварительные оценки и темы по словарю рассчитываются без ИИ и помечены в интерфейсе.",
+		},
+	})
+}
+
+func startOfDay(t time.Time, loc *time.Location) time.Time {
+	t = t.In(loc)
+	return time.Date(t.Year(), t.Month(), t.Day(), 0, 0, 0, 0, loc)
+}
+
+func noteIf(cond bool, s string) string {
+	if cond {
+		return s
+	}
+	return ""
+}
+
+func ptr[T any](v T) *T { return &v }
