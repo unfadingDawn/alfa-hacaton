@@ -43,7 +43,7 @@ export function ResearchView({ id }: { id: string }) {
         )}
       </div>
       <p className="mt-3 text-[12px] text-silver">
-        Текст получен распознаванием PDF из материалов кейса; таблицы и графики в него не входят.
+        Текст получен распознаванием PDF-материала Альфа-Банка; таблицы и графики в него не входят.
       </p>
       <div className="mt-6 space-y-6">
         {[...pages.entries()].map(([page, chunks]) => (

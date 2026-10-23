@@ -79,3 +79,54 @@ SELECT
        AND a.published_at >= @since)::int AS high_importance_llm,
   (SELECT count(*) FROM personal_analyses pa
      WHERE pa.user_id = @user_id AND pa.depth = 'full' AND pa.created_at >= @since)::int AS full_analyses;
+
+-- Помесячный срез: как новости отражаются на компании пользователя.
+-- Для каждой новости берётся лучшая оценка: полный анализ важнее краткого, модель — правил.
+-- name: UserMonthlyExposure :many
+SELECT to_char(date_trunc('month', a.published_at AT TIME ZONE @tz::text), 'YYYY-MM')::text AS month,
+       count(*)::int AS total,
+       count(*) FILTER (WHERE b.relevance_score >= @min_score::int)::int AS relevant,
+       count(*) FILTER (WHERE b.relevance_score >= @min_score::int AND b.importance_level = 'critical')::int AS critical,
+       count(*) FILTER (WHERE b.relevance_score >= @min_score::int AND b.importance_level = 'high')::int AS high,
+       count(*) FILTER (WHERE b.relevance_score >= @min_score::int AND b.importance_level = 'medium')::int AS medium,
+       count(*) FILTER (WHERE b.relevance_score >= @min_score::int AND b.importance_level = 'low')::int AS low,
+       coalesce(round(avg(b.relevance_score) FILTER (WHERE b.relevance_score >= @min_score::int)), 0)::int AS avg_relevance,
+       count(*) FILTER (WHERE b.method = 'llm')::int AS llm_rated,
+       count(*) FILTER (WHERE b.method = 'llm' AND b.impact_type = 'risk')::int AS risks,
+       count(*) FILTER (WHERE b.method = 'llm' AND b.impact_type = 'opportunity')::int AS opportunities,
+       count(*) FILTER (WHERE b.method = 'llm' AND b.impact_type = 'mixed')::int AS mixed,
+       coalesce(sum(
+         (CASE b.impact_type WHEN 'risk' THEN -1 WHEN 'opportunity' THEN 1 ELSE 0 END) *
+         (CASE b.importance_level WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)
+       ) FILTER (WHERE b.method = 'llm'), 0)::int AS net_impact,
+       count(*) FILTER (WHERE b.depth = 'full')::int AS full_analyses,
+       count(*) FILTER (WHERE b.has_bank_view)::int AS with_bank_view
+FROM articles a
+LEFT JOIN LATERAL (
+  SELECT x.method, x.depth, x.relevance_score, x.importance_level, x.impact_type,
+         (x.depth = 'full' AND jsonb_array_length(coalesce(x.result->'insight'->'bank_view', '[]'::jsonb)) > 0) AS has_bank_view
+  FROM personal_analyses x
+  WHERE x.article_id = a.id AND x.user_id = @user_id
+  ORDER BY (x.depth = 'full') DESC, (x.method = 'llm') DESC
+  LIMIT 1
+) b ON true
+WHERE a.duplicate_of IS NULL AND a.published_at >= @since
+GROUP BY 1
+ORDER BY 1;
+
+-- Каналы влияния: через какие темы значимые новости касаются компании (любая оценка).
+-- name: UserExposureChannels :many
+SELECT t.code, t.name, count(*)::int AS articles
+FROM articles a
+JOIN LATERAL (
+  SELECT x.relevance_score, x.matched_topics
+  FROM personal_analyses x
+  WHERE x.article_id = a.id AND x.user_id = @user_id
+  ORDER BY (x.depth = 'full') DESC, (x.method = 'llm') DESC
+  LIMIT 1
+) b ON true
+JOIN topics t ON t.code = ANY (b.matched_topics)
+WHERE a.duplicate_of IS NULL AND a.published_at >= @since AND b.relevance_score >= @min_score::int
+GROUP BY t.code, t.name
+ORDER BY articles DESC
+LIMIT 10;

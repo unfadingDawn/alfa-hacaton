@@ -1,15 +1,15 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
-import { useRouter, useSearchParams } from "next/navigation";
-import { Plus, Search, Sparkles } from "lucide-react";
+import { useSearchParams } from "next/navigation";
+import { Search, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { PageHeader } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Dialog, DialogContent, DialogTrigger } from "@/components/ui/dialog";
-import { Field, Input, Select, Textarea } from "@/components/ui/field";
+import { Input, Select } from "@/components/ui/field";
 import { EmptyState, ErrorState, Skeleton } from "@/components/ui/misc";
-import { api, ApiError, errorMessage } from "@/lib/api";
+import { api, errorMessage } from "@/lib/api";
 import { pluralize } from "@/lib/format";
 import type { FeedItem, Topic } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
@@ -25,6 +25,7 @@ export function Feed({ savedOnly = false }: { savedOnly?: boolean }) {
     ...(savedOnly ? { ...initial, period: "all", sort: "date" } : initial),
     topic: sp.get("topic") ?? "",
     source_kind: sp.get("source_kind") ?? "",
+    min_importance: sp.get("min_importance") ?? "",
   }));
   const [q, setQ] = useState("");
   const [items, setItems] = useState<FeedItem[]>([]);
@@ -91,10 +92,7 @@ export function Feed({ savedOnly = false }: { savedOnly?: boolean }) {
             : "Новости из официальных лент и материалы Альфа-Банка, упорядоченные по значимости для вашей компании и роли."
         }
         action={!savedOnly && (
-          <div className="flex flex-wrap gap-2">
-            <SubmitNewsDialog />
-            <RankDialog onDone={() => setTick((t) => t + 1)} />
-          </div>
+          <RankDialog onDone={() => setTick((t) => t + 1)} />
         )}
       />
 
@@ -135,7 +133,6 @@ export function Feed({ savedOnly = false }: { savedOnly?: boolean }) {
             <option value="">Все источники</option>
             <option value="rss">Новостные ленты</option>
             <option value="alfa_research">Аналитика Альфа-Банка</option>
-            <option value="user_submitted">Добавленные мной</option>
           </Select>
           <Select aria-label="Сортировка" value={filters.sort} onChange={set("sort")}>
             <option value="relevance">Сначала релевантные</option>
@@ -229,10 +226,7 @@ function RankDialog({ onDone }: { onDone: () => void }) {
         title="Оценить ленту моделью"
         description="Модель оценит до 8 новостей с лучшей предварительной оценкой, у которых ещё нет оценки ИИ."
       >
-        <p className="text-sm text-ink-soft">
-          Будет отправлен один запрос к модели. Расход учитывается в общем дневном лимите ключа команды.
-        </p>
-        <div className="mt-6 flex justify-end gap-2">
+        <div className="flex justify-end gap-2">
           <Button variant="ghost" onClick={() => setOpen(false)}>
             Отмена
           </Button>
@@ -240,73 +234,6 @@ function RankDialog({ onDone }: { onDone: () => void }) {
             Оценить
           </Button>
         </div>
-      </DialogContent>
-    </Dialog>
-  );
-}
-
-function SubmitNewsDialog() {
-  const router = useRouter();
-  const [open, setOpen] = useState(false);
-  const [form, setForm] = useState({ title: "", text: "", url: "", published_at: "" });
-  const [errors, setErrors] = useState<Record<string, string>>({});
-  const [busy, setBusy] = useState(false);
-  async function submit(e: React.FormEvent) {
-    e.preventDefault();
-    const fe: Record<string, string> = {};
-    if (form.title.trim().length < 5) fe.title = "Не короче 5 символов";
-    if (form.text.trim().length < 50) fe.text = "Не короче 50 символов";
-    setErrors(fe);
-    if (Object.keys(fe).length) return;
-    setBusy(true);
-    try {
-      const r = await api<{ id: string }>("/articles", { method: "POST", body: form });
-      toast.success("Новость добавлена");
-      setOpen(false);
-      router.push(`/news/${r.id}`);
-    } catch (err) {
-      if (err instanceof ApiError && err.fields) setErrors(err.fields);
-      else toast.error(errorMessage(err));
-    } finally {
-      setBusy(false);
-    }
-  }
-  const set = (k: keyof typeof form) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm({ ...form, [k]: e.target.value });
-  return (
-    <Dialog open={open} onOpenChange={setOpen}>
-      <DialogTrigger asChild>
-        <Button variant="secondary">
-          <Plus /> Добавить новость
-        </Button>
-      </DialogTrigger>
-      <DialogContent
-        title="Проверить свою новость"
-        description="Вставьте текст новости, которой нет в ленте. Она будет видна только вам и помечена как добавленная вручную."
-      >
-        <form onSubmit={submit} noValidate className="space-y-4">
-          <Field id="n-title" label="Заголовок" error={errors.title}>
-            <Input value={form.title} onChange={set("title")} />
-          </Field>
-          <Field id="n-text" label="Текст новости" error={errors.text}>
-            <Textarea value={form.text} onChange={set("text")} className="min-h-40" />
-          </Field>
-          <div className="grid gap-4 sm:grid-cols-2">
-            <Field id="n-url" label="Ссылка на источник" hint="Необязательно" error={errors.url}>
-              <Input value={form.url} onChange={set("url")} placeholder="https://" />
-            </Field>
-            <Field id="n-date" label="Дата публикации" hint="По умолчанию — сегодня" error={errors.published_at}>
-              <Input type="date" value={form.published_at} onChange={set("published_at")} />
-            </Field>
-          </div>
-          <div className="flex justify-end gap-2 pt-2">
-            <Button type="button" variant="ghost" onClick={() => setOpen(false)}>
-              Отмена
-            </Button>
-            <Button type="submit" loading={busy}>
-              Добавить
-            </Button>
-          </div>
-        </form>
       </DialogContent>
     </Dialog>
   );

@@ -92,15 +92,15 @@ type Plan struct {
 }
 
 type Context struct {
-	RoleTitle     string
-	RoleFocus     []string
-	WorkFocus     string
-	Interests     []string
-	CompanyBrief  string // краткое описание компании (факты с ID)
-	UserProfile   string // что пользователь написал о компании
-	Horizon       string
-	Detail        string
-	TopicNames    map[string]string
+	RoleTitle    string
+	RoleFocus    []string
+	WorkFocus    string
+	Interests    []string
+	CompanyBrief string // краткое описание компании (факты с ID)
+	UserProfile  string // что пользователь написал о компании
+	Horizon      string
+	Detail       string
+	TopicNames   map[string]string
 }
 
 func PlanMessages(article Evidence, cls *Classification, ctx Context) []llm.Message {

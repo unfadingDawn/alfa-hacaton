@@ -46,3 +46,7 @@ export function pluralize(n: number, one: string, few: string, many: string) {
   if (m10 >= 2 && m10 <= 4 && (m100 < 12 || m100 > 14)) return few;
   return many;
 }
+
+// Единый дисклеймер для всех страниц сервиса.
+export const DISCLAIMER =
+  "Информация в сервисе несёт исключительно информационный характер и не является инвестиционной рекомендацией.";

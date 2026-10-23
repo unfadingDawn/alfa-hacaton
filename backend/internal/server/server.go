@@ -19,6 +19,7 @@ import (
 	"github.com/alfainsight/backend/internal/companies"
 	"github.com/alfainsight/backend/internal/db/dbq"
 	"github.com/alfainsight/backend/internal/insights"
+	"github.com/alfainsight/backend/internal/integrations/alfabusiness"
 	"github.com/alfainsight/backend/internal/llm"
 	"github.com/alfainsight/backend/internal/news"
 	"github.com/alfainsight/backend/internal/platform/config"
@@ -55,7 +56,7 @@ func New(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) *App {
 	tokens := auth.NewTokenIssuer(cfg.JWTSecret, cfg.AccessTTL)
 
 	authH := &auth.Handler{Q: q, Tokens: tokens, RefreshTTL: cfg.RefreshTTL, CookieSecure: cfg.CookieSecure, Log: log,
-		Limiter: auth.NewRateLimiter(10, time.Minute)}
+		Limiter: auth.NewRateLimiter(10, time.Minute), AlfaBusiness: alfabusiness.NotConnected{}}
 	usersH := &users.Handler{Pool: pool, Q: q, Svc: compSvc, Log: log,
 		OnProfileChanged: func(id uuid.UUID) { ag.ResetUserScores(context.Background(), id) }}
 	compH := &companies.Handler{Q: q, Svc: compSvc, Log: log}
@@ -78,6 +79,7 @@ func New(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) *App {
 			_, _ = w.Write(api.OpenAPI)
 		})
 		authH.Routes(r)
+		anH.PublicRoutes(r)
 		r.Group(func(r chi.Router) {
 			r.Use(auth.RequireAuth(tokens))
 			usersH.Routes(r)

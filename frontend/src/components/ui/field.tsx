@@ -40,19 +40,33 @@ export function Field({
   error,
   children,
   className,
+  required,
 }: {
   id: string;
   label: string;
   hint?: string;
   error?: string;
+  required?: boolean;
   children: React.ReactElement<{ id?: string; "aria-invalid"?: boolean; "aria-describedby"?: string }>;
   className?: string;
 }) {
   const describedBy = error ? `${id}-error` : hint ? `${id}-hint` : undefined;
   return (
     <div className={cn("flex flex-col gap-1.5", className)}>
-      <Label htmlFor={id}>{label}</Label>
-      {React.cloneElement(children, { id, "aria-invalid": !!error, "aria-describedby": describedBy })}
+      <Label htmlFor={id}>
+        {label}
+        {required && (
+          <span className="ml-0.5 text-steel" aria-hidden>
+            *
+          </span>
+        )}
+      </Label>
+      {React.cloneElement(children as React.ReactElement<Record<string, unknown>>, {
+        id,
+        "aria-invalid": !!error,
+        "aria-describedby": describedBy,
+        ...(required ? { "aria-required": true } : {}),
+      })}
       {error ? (
         <p id={`${id}-error`} className="text-[13px] text-risk">
           {error}

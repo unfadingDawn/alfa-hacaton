@@ -87,15 +87,15 @@ func periodSince(p string) *time.Time {
 }
 
 type FeedItem struct {
-	ID          uuid.UUID     `json:"id"`
-	URL         string        `json:"url"`
-	Title       string        `json:"title"`
-	Summary     string        `json:"summary"`
-	PublishedAt time.Time     `json:"published_at"`
-	Source      SourceRef     `json:"source"`
-	Topics      []TopicRef    `json:"topics"`
-	Analysis    *AnalysisRef  `json:"analysis"`
-	IsSaved     bool          `json:"is_saved"`
+	ID          uuid.UUID    `json:"id"`
+	URL         string       `json:"url"`
+	Title       string       `json:"title"`
+	Summary     string       `json:"summary"`
+	PublishedAt time.Time    `json:"published_at"`
+	Source      SourceRef    `json:"source"`
+	Topics      []TopicRef   `json:"topics"`
+	Analysis    *AnalysisRef `json:"analysis"`
+	IsSaved     bool         `json:"is_saved"`
 }
 
 type SourceRef struct {

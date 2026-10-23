@@ -220,7 +220,7 @@ func (q *Queries) CounterpartyIndustries(ctx context.Context, companyID string) 
 const datasetStats = `-- name: DatasetStats :one
 SELECT
   (SELECT count(*) FROM companies)::int     AS companies,
-  (SELECT count(*) FROM companies WHERE revenue >= 15000000000)::int AS large_companies,
+  (SELECT count(*) FROM companies WHERE group_revenue >= 15000000000)::int AS large_companies,
   (SELECT count(*) FROM person_links)::int  AS person_links,
   (SELECT count(*) FROM payments)::int      AS payments
 `
@@ -254,7 +254,7 @@ func (q *Queries) DeleteImportIssues(ctx context.Context, fileName string) error
 }
 
 const getCompany = `-- name: GetCompany :one
-SELECT id, org_type, okfs_name, company_age, eco_stage, okved_code, okved_name, okved_division, negative_mark, workers_fns, workers_spark, client_type, has_rko, has_guarantee, has_loan, has_leasing, has_deposit, has_payroll, fts_flag, fts_countries, has_factoring, revenue, group_id, city, region, source_row, display_name, profile, imported_at, updated_at FROM companies WHERE id = $1
+SELECT id, org_type, okfs_name, company_age, eco_stage, okved_code, okved_name, okved_division, negative_mark, workers_fns, workers_spark, client_type, has_rko, has_guarantee, has_loan, has_leasing, has_deposit, has_payroll, fts_flag, fts_countries, has_factoring, revenue, group_id, city, region, source_row, display_name, profile, imported_at, updated_at, group_revenue, group_size FROM companies WHERE id = $1
 `
 
 func (q *Queries) GetCompany(ctx context.Context, id string) (Company, error) {
@@ -291,6 +291,8 @@ func (q *Queries) GetCompany(ctx context.Context, id string) (Company, error) {
 		&i.Profile,
 		&i.ImportedAt,
 		&i.UpdatedAt,
+		&i.GroupRevenue,
+		&i.GroupSize,
 	)
 	return i, err
 }
@@ -399,7 +401,7 @@ func (q *Queries) ListCompanyRegions(ctx context.Context) ([]ListCompanyRegionsR
 
 const searchCompanies = `-- name: SearchCompanies :many
 SELECT id, display_name, okved_code, okved_name, region, city, revenue,
-       client_type, eco_stage, workers_fns, group_id
+       client_type, eco_stage, workers_fns, group_id, group_revenue, group_size
 FROM companies
 WHERE ($1::text IS NULL
          OR id = $1::text
@@ -407,31 +409,36 @@ WHERE ($1::text IS NULL
          OR okved_code LIKE $1::text || '%'
          OR display_name ILIKE '%' || $1::text || '%')
   AND ($2::text IS NULL OR region = $2::text)
-  AND ($3::numeric IS NULL OR revenue >= $3::numeric)
-ORDER BY revenue DESC NULLS LAST, id
-LIMIT $5 OFFSET $4
+  -- Сегмент крупного бизнеса определяется по выручке группы компаний (ответ организаторов).
+  AND ($3::numeric IS NULL OR group_revenue >= $3::numeric)
+  AND (NOT $4::boolean OR client_type = 'CLIENT')
+ORDER BY revenue DESC NULLS LAST, group_revenue DESC NULLS LAST, id
+LIMIT $6 OFFSET $5
 `
 
 type SearchCompaniesParams struct {
-	Q          *string  `json:"q"`
-	Region     *string  `json:"region"`
-	MinRevenue *float64 `json:"min_revenue"`
-	Off        int32    `json:"off"`
-	Lim        int32    `json:"lim"`
+	Q           *string  `json:"q"`
+	Region      *string  `json:"region"`
+	MinRevenue  *float64 `json:"min_revenue"`
+	ClientsOnly bool     `json:"clients_only"`
+	Off         int32    `json:"off"`
+	Lim         int32    `json:"lim"`
 }
 
 type SearchCompaniesRow struct {
-	ID          string   `json:"id"`
-	DisplayName *string  `json:"display_name"`
-	OkvedCode   string   `json:"okved_code"`
-	OkvedName   string   `json:"okved_name"`
-	Region      *string  `json:"region"`
-	City        *string  `json:"city"`
-	Revenue     *float64 `json:"revenue"`
-	ClientType  *string  `json:"client_type"`
-	EcoStage    *string  `json:"eco_stage"`
-	WorkersFns  *string  `json:"workers_fns"`
-	GroupID     *string  `json:"group_id"`
+	ID           string   `json:"id"`
+	DisplayName  *string  `json:"display_name"`
+	OkvedCode    string   `json:"okved_code"`
+	OkvedName    string   `json:"okved_name"`
+	Region       *string  `json:"region"`
+	City         *string  `json:"city"`
+	Revenue      *float64 `json:"revenue"`
+	ClientType   *string  `json:"client_type"`
+	EcoStage     *string  `json:"eco_stage"`
+	WorkersFns   *string  `json:"workers_fns"`
+	GroupID      *string  `json:"group_id"`
+	GroupRevenue *float64 `json:"group_revenue"`
+	GroupSize    *int32   `json:"group_size"`
 }
 
 func (q *Queries) SearchCompanies(ctx context.Context, arg SearchCompaniesParams) ([]SearchCompaniesRow, error) {
@@ -439,6 +446,7 @@ func (q *Queries) SearchCompanies(ctx context.Context, arg SearchCompaniesParams
 		arg.Q,
 		arg.Region,
 		arg.MinRevenue,
+		arg.ClientsOnly,
 		arg.Off,
 		arg.Lim,
 	)
@@ -461,6 +469,8 @@ func (q *Queries) SearchCompanies(ctx context.Context, arg SearchCompaniesParams
 			&i.EcoStage,
 			&i.WorkersFns,
 			&i.GroupID,
+			&i.GroupRevenue,
+			&i.GroupSize,
 		); err != nil {
 			return nil, err
 		}
@@ -592,7 +602,7 @@ SET display_name = $1,
     profile = $2,
     updated_at = now()
 WHERE id = $3
-RETURNING id, org_type, okfs_name, company_age, eco_stage, okved_code, okved_name, okved_division, negative_mark, workers_fns, workers_spark, client_type, has_rko, has_guarantee, has_loan, has_leasing, has_deposit, has_payroll, fts_flag, fts_countries, has_factoring, revenue, group_id, city, region, source_row, display_name, profile, imported_at, updated_at
+RETURNING id, org_type, okfs_name, company_age, eco_stage, okved_code, okved_name, okved_division, negative_mark, workers_fns, workers_spark, client_type, has_rko, has_guarantee, has_loan, has_leasing, has_deposit, has_payroll, fts_flag, fts_countries, has_factoring, revenue, group_id, city, region, source_row, display_name, profile, imported_at, updated_at, group_revenue, group_size
 `
 
 type UpdateCompanyProfileParams struct {
@@ -635,6 +645,8 @@ func (q *Queries) UpdateCompanyProfile(ctx context.Context, arg UpdateCompanyPro
 		&i.Profile,
 		&i.ImportedAt,
 		&i.UpdatedAt,
+		&i.GroupRevenue,
+		&i.GroupSize,
 	)
 	return i, err
 }

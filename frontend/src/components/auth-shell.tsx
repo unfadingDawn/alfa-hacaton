@@ -1,3 +1,4 @@
+import { DISCLAIMER } from "@/lib/format";
 import { Logo } from "./brand";
 
 // Композиция по референсу: стеклянные волны на фоне, крупный заголовок
@@ -13,12 +14,7 @@ export function AuthShell({
 }) {
   return (
     <div className="relative min-h-dvh overflow-hidden">
-      <div
-        aria-hidden
-        className="absolute inset-0 bg-cover bg-center"
-        style={{ backgroundImage: "url(/waves.jpg)" }}
-      />
-      <div aria-hidden className="absolute inset-0 bg-gradient-to-r from-ice/85 via-ice/45 to-ice/10 lg:from-ice/80 lg:via-ice/25 lg:to-transparent" />
+      <div aria-hidden className="app-backdrop absolute inset-0" />
       <div className="relative mx-auto flex min-h-dvh max-w-[1240px] flex-col px-4 py-6 sm:px-8 lg:py-10">
         <Logo />
         <div className="grid flex-1 items-center gap-10 py-8 lg:grid-cols-[1.15fr_minmax(380px,440px)] lg:gap-16">
@@ -28,7 +24,7 @@ export function AuthShell({
           </div>
           <div className="glass rounded-[var(--radius-xl)] p-6 sm:p-8">{children}</div>
         </div>
-        <p className="text-[12px] text-ink-soft/80">Прототип для хакатона Альфа-Банка. Данные компаний обезличены.</p>
+        <p className="text-[12px] text-ink-soft/80">{DISCLAIMER}</p>
       </div>
     </div>
   );

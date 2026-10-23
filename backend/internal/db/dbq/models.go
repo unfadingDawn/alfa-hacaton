@@ -84,6 +84,8 @@ type Company struct {
 	Profile       json.RawMessage `json:"profile"`
 	ImportedAt    time.Time       `json:"imported_at"`
 	UpdatedAt     time.Time       `json:"updated_at"`
+	GroupRevenue  *float64        `json:"group_revenue"`
+	GroupSize     *int32          `json:"group_size"`
 }
 
 type Feedback struct {
@@ -220,6 +222,7 @@ type User struct {
 	OnboardingCompleted bool            `json:"onboarding_completed"`
 	CreatedAt           time.Time       `json:"created_at"`
 	UpdatedAt           time.Time       `json:"updated_at"`
+	Avatar              *string         `json:"avatar"`
 }
 
 type UserInterest struct {

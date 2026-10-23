@@ -2,17 +2,18 @@
 
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
-import { PageHeader, useMe } from "@/components/app-shell";
+import { useMe } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Field, Input, Textarea } from "@/components/ui/field";
 import { Badge, EmptyState, ErrorState, Panel, Skeleton } from "@/components/ui/misc";
-import { api, errorMessage } from "@/lib/api";
+import { api, ApiError, errorMessage } from "@/lib/api";
 import { formatRub } from "@/lib/format";
-import type { CompanyProfile, Counterparty, Industry } from "@/lib/types";
+import type { BusinessProfile, CompanyProfile, Counterparty, Industry } from "@/lib/types";
+import { BusinessFields, cleanBusiness } from "./business-fields";
 import { useApi } from "@/lib/use-api";
 import { CompanyFacts } from "./facts";
 
-export function CompanyView() {
+export function CompanyTab() {
   const { me, reload: reloadMe } = useMe();
   const company = me.companies.find((c) => c.is_primary) ?? me.companies[0];
   const { data, error, loading, reload, mutate } = useApi<CompanyProfile>(company ? `/companies/${company.id}` : null);
@@ -29,14 +30,22 @@ export function CompanyView() {
   const r = data.relations;
   return (
     <div>
-      <PageHeader
-        title={data.display_name || data.okved_name}
-        lead={
-          <>
-            {data.id}, раздел {data.section.letter} «{data.section.name}», {data.region}. {data.size_segment}.
-          </>
-        }
-      />
+      <div className="glass-night mb-6 rounded-[var(--radius-xl)] p-6 sm:p-7">
+        <p className="text-[13px] text-white/60">
+          {data.id}, раздел {data.section.letter}, {data.region}
+        </p>
+        <h2 className="display mt-1 text-[26px] sm:text-[32px]">{data.display_name || data.okved_name}</h2>
+        <p className="mt-1 text-[15px] text-white/75">{data.okved_code} — {data.okved_name}</p>
+        <div className="mt-5 flex flex-wrap gap-2">
+          <span className="glass-night-card rounded-full px-3 py-1 text-[13px]">{data.size_segment}</span>
+          {data.revenue != null && <span className="glass-night-card rounded-full px-3 py-1 text-[13px]">Выручка {formatRub(data.revenue)}</span>}
+          {data.group_size != null && data.group_size > 1 && (
+            <span className="glass-night-card rounded-full px-3 py-1 text-[13px]">
+              Группа: {data.group_size} компаний, {formatRub(data.group_revenue)}
+            </span>
+          )}
+        </div>
+      </div>
       <div className="grid gap-6 xl:grid-cols-[minmax(0,1.3fr)_minmax(0,1fr)]">
         <div className="space-y-6">
           <Panel title="Чувствительность к внешним событиям" description="Выведено из фактических полей данных банка">
@@ -182,16 +191,26 @@ function EditProfile({ data, onSaved }: { data: CompanyProfile; onSaved: (p: Com
     suppliers: data.user_profile.suppliers ?? "",
     priorities: (data.user_profile.priorities ?? []).join("\n"),
     notes: data.user_profile.notes ?? "",
+    business: data.user_profile.business ?? ({} as BusinessProfile),
   });
   const [form, setForm] = useState(init);
   const [busy, setBusy] = useState(false);
   const [errors, setErrors] = useState<Record<string, string>>({});
   useEffect(() => setForm(init()), [data]); // eslint-disable-line react-hooks/exhaustive-deps
-  const set = (k: keyof ReturnType<typeof init>) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm({ ...form, [k]: e.target.value });
+  type K = Exclude<keyof ReturnType<typeof init>, "business">;
+  const set = (k: K) => (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement>) => setForm({ ...form, [k]: e.target.value });
   async function save(e: React.FormEvent) {
     e.preventDefault();
+    const fe: Record<string, string> = {};
+    (["display_name", "products", "markets", "suppliers"] as const).forEach((k) => {
+      if (!form[k].trim()) fe[k] = "Обязательное поле";
+    });
+    setErrors(fe);
+    if (Object.keys(fe).length) {
+      toast.error("Заполните обязательные поля");
+      return;
+    }
     setBusy(true);
-    setErrors({});
     try {
       const p = await api<CompanyProfile>(`/companies/${data.id}`, {
         method: "PUT",
@@ -204,44 +223,51 @@ function EditProfile({ data, onSaved }: { data: CompanyProfile; onSaved: (p: Com
             suppliers: form.suppliers,
             notes: form.notes,
             priorities: form.priorities.split("\n").map((s) => s.trim()).filter(Boolean),
+            business: cleanBusiness(form.business),
           },
         },
       });
       onSaved(p);
       toast.success("Данные компании сохранены", { description: "Оценки новостей будут пересчитаны с учётом изменений." });
     } catch (err) {
-      const fe = (err as { fields?: Record<string, string> }).fields;
-      if (fe) setErrors(fe);
+      if (err instanceof ApiError && err.fields) setErrors(err.fields);
       toast.error(errorMessage(err));
     } finally {
       setBusy(false);
     }
   }
   return (
-    <Panel title="Сведения от вашей команды" description="Их нет в данных банка — модель учитывает их как информацию от пользователя" className="h-fit xl:sticky xl:top-10">
+    <Panel
+      title="Сведения о компании"
+      description="Если направление бизнеса изменится, обновите их здесь — новый кабинет создавать не нужно"
+      className="h-fit xl:sticky xl:top-8"
+    >
       <form onSubmit={save} className="space-y-4">
-        <Field id="c-name" label="Название" error={errors.display_name}>
+        <Field id="c-name" label="Название" error={errors.display_name} required>
           <Input value={form.display_name} onChange={set("display_name")} />
         </Field>
-        <Field id="c-desc" label="Чем занимается компания" error={errors.description}>
-          <Textarea value={form.description} onChange={set("description")} maxLength={2000} />
-        </Field>
-        <Field id="c-products" label="Продукты и услуги" error={errors.products}>
+        <Field id="c-products" label="Продукты и услуги" error={errors.products} required>
           <Input value={form.products} onChange={set("products")} />
         </Field>
-        <Field id="c-markets" label="Рынки и клиенты" error={errors.markets}>
-          <Input value={form.markets} onChange={set("markets")} />
+        <div className="grid items-start gap-4 sm:grid-cols-2">
+          <Field id="c-markets" label="Рынки и клиенты" error={errors.markets} required>
+            <Input value={form.markets} onChange={set("markets")} />
+          </Field>
+          <Field id="c-suppliers" label="Поставщики и сырьё" error={errors.suppliers} required>
+            <Input value={form.suppliers} onChange={set("suppliers")} />
+          </Field>
+        </div>
+        <Field id="c-prio" label="Приоритеты компании" error={errors.priorities}>
+          <Textarea value={form.priorities} onChange={set("priorities")} placeholder="Например: снизить стоимость долга" />
         </Field>
-        <Field id="c-suppliers" label="Ключевые поставщики и сырьё" error={errors.suppliers}>
-          <Input value={form.suppliers} onChange={set("suppliers")} />
-        </Field>
-        <Field id="c-prio" label="Приоритеты бизнеса" hint="Каждый с новой строки" error={errors.priorities}>
-          <Textarea value={form.priorities} onChange={set("priorities")} />
+        <Field id="c-desc" label="Чем занимается компания" error={errors.description}>
+          <Textarea value={form.description} onChange={set("description")} maxLength={2000} className="min-h-16" />
         </Field>
         <Field id="c-notes" label="Заметки" error={errors.notes}>
           <Textarea value={form.notes} onChange={set("notes")} className="min-h-16" />
         </Field>
-        <div className="flex items-center justify-between">
+        <BusinessFields value={form.business} onChange={(b) => setForm({ ...form, business: b })} errors={errors} />
+        <div className="flex items-center justify-between gap-3">
           <Badge tone="outline">Исходные данные банка не меняются</Badge>
           <Button type="submit" loading={busy}>
             Сохранить

@@ -1,6 +1,5 @@
 "use client";
 
-import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
   Bar,
@@ -27,8 +26,41 @@ import { cn } from "@/lib/utils";
 // Палитра проверена валидатором (светлая тема, поверхность #fbfdff):
 // сталь / оранжевый / бирюзовый — порядок фиксирован, цвет следует за сущностью.
 const SERIES = ["#2b67a8", "#eb6834", "#1baf7a"];
-const IMPACT_COLOR: Record<Impact, string> = { risk: "#a8463d", opportunity: "#1b7a63", mixed: "#8a6a1f", neutral: "#7f90a4" };
-const AXIS = { fontSize: 12, fill: "#7f90a4" };
+const IMPACT_COLOR: Record<Impact, string> = { risk: "#c2410c", opportunity: "#11804f", mixed: "#8a6a1f", neutral: "#8a93a0" };
+const AXIS = { fontSize: 12, fill: "#8a93a0" };
+// Порядковая шкала важности: один оттенок, от светлого к тёмному (проверена валидатором, --ordinal).
+const IMPORTANCE_STEPS: { key: Importance; label: string; color: string }[] = [
+  { key: "critical", label: "Критическая", color: "#8c120b" },
+  { key: "high", label: "Высокая", color: "#c8251a" },
+  { key: "medium", label: "Средняя", color: "#ea5a47" },
+  { key: "low", label: "Низкая", color: "#f4998d" },
+];
+
+type Month = {
+  month: string;
+  total: number;
+  relevant: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  avg_relevance: number;
+  llm_rated: number;
+  risks: number;
+  opportunities: number;
+  mixed: number;
+  net_impact: number;
+  full_analyses: number;
+  with_bank_view: number;
+};
+type KPI = {
+  relevant_share: { value: number | null; relevant: number; total: number };
+  acuteness: { value: number | null; acute: number; relevant: number };
+  balance: { value: number | null; risks: number; opportunities: number; mixed: number; rated: number; net_impact: number };
+  bank_backed: { value: number | null; with_bank_view: number; full: number };
+  channels: { count: number; top: { code: string; name: string; articles: number; share: number | null } | null };
+  peak_month: { month: string; relevant: number } | null;
+};
 
 type Analytics = {
   period_days: number;
@@ -39,12 +71,18 @@ type Analytics = {
   company_topics: { topic: string; hits: number }[];
   impact: { impact_type: Impact; importance_level: Importance; analyses: number }[];
   risks_opportunities: { article_id: string; title: string; kind: "risk" | "opportunity"; item_title: string; relevance_score: number }[];
+  monthly: Month[];
+  channels: { code: string; name: string; articles: number }[];
+  kpi: KPI;
+  min_score: number;
   sufficient: { articles: boolean; llm_analyses: boolean };
   notes: string[];
 };
 
 const dayFmt = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
 const fmtDay = (iso: string) => dayFmt.format(new Date(iso));
+const monthFmt = new Intl.DateTimeFormat("ru-RU", { month: "short", year: "numeric" });
+const fmtMonth = (ym: string) => monthFmt.format(new Date(`${ym}-01T12:00:00`)).replace(" г.", "");
 
 function TooltipBox({ active, payload, label, labelFormatter }: {
   active?: boolean;
@@ -68,12 +106,14 @@ function TooltipBox({ active, payload, label, labelFormatter }: {
 
 // Панель графика с переключателем «график / таблица» (доступность и точные значения).
 function ChartPanel({
+  className,
   title,
   description,
   table,
   children,
   empty,
 }: {
+  className?: string;
   title: string;
   description?: string;
   table: { head: string[]; rows: (string | number)[][] };
@@ -83,6 +123,7 @@ function ChartPanel({
   const [asTable, setAsTable] = useState(false);
   return (
     <Panel
+      className={className}
       title={title}
       description={description}
       action={
@@ -128,7 +169,7 @@ function ChartPanel({
 }
 
 export function AnalyticsView() {
-  const [period, setPeriod] = useState("30d");
+  const [period, setPeriod] = useState("365d");
   const { data, error, loading, reload } = useApi<Analytics>(`/analytics?period=${period}`);
   const topics = useApi<{ items: Topic[] }>("/topics");
   const names = useMemo(() => new Map(topics.data?.items.map((t) => [t.code, t.name]) ?? []), [topics.data]);
@@ -137,12 +178,13 @@ export function AnalyticsView() {
     <div>
       <PageHeader
         title="Аналитика"
-        lead="Сводка по новостной повестке и по тому, как она затрагивает вашу компанию. Все показатели считаются по данным в системе."
+        lead="Как новости отражаются на вашей компании: по месяцам, по важности и по типу влияния. Все показатели считаются по новостям и оценкам в системе."
         action={
           <Select aria-label="Период" value={period} onChange={(e) => setPeriod(e.target.value)} className="w-[180px]">
-            <option value="7d">7 дней</option>
             <option value="30d">30 дней</option>
-            <option value="90d">90 дней</option>
+            <option value="90d">3 месяца</option>
+            <option value="180d">6 месяцев</option>
+            <option value="365d">12 месяцев</option>
           </Select>
         }
       />
@@ -150,7 +192,7 @@ export function AnalyticsView() {
         <ErrorState error={error} onRetry={reload} />
       ) : loading || !data ? (
         <div className="grid gap-6 lg:grid-cols-2">
-          {Array.from({ length: 4 }).map((_, i) => (
+          {Array.from({ length: 6 }).map((_, i) => (
             <Skeleton key={i} className="h-[340px]" />
           ))}
         </div>
@@ -164,20 +206,6 @@ export function AnalyticsView() {
 }
 
 function Charts({ data, names }: { data: Analytics; names: Map<string, string> }) {
-  const topicTotals = useMemo(() => {
-    const m = new Map<string, { name: string; total: number; llm: number; keywords: number; metadata: number }>();
-    data.topic_distribution.forEach((r) => {
-      const x = m.get(r.code) ?? { name: r.name, total: 0, llm: 0, keywords: 0, metadata: 0 };
-      x.total += r.articles;
-      x[r.method] += r.articles;
-      m.set(r.code, x);
-    });
-    return [...m.values()].sort((a, b) => b.total - a.total).slice(0, 10);
-  }, [data.topic_distribution]);
-
-  const daily = data.daily.map((d) => ({ day: d.day, Всего: d.total, Важные: d.important }));
-  const importantTotal = data.daily.reduce((s, d) => s + d.important, 0);
-
   const top3 = useMemo(() => {
     const sums = new Map<string, number>();
     data.daily_topics.forEach((d) => sums.set(d.topic_code, (sums.get(d.topic_code) ?? 0) + d.articles));
@@ -201,150 +229,163 @@ function Charts({ data, names }: { data: Analytics; names: Map<string, string> }
     return (["risk", "opportunity", "mixed", "neutral"] as Impact[]).map((k) => ({ key: k, name: impactLabel[k], value: m.get(k) ?? 0 }));
   }, [data.impact]);
   const llmCount = impact.reduce((s, x) => s + x.value, 0);
-  const companyTopics = data.company_topics.map((t) => ({ name: names.get(t.topic) ?? t.topic, hits: t.hits }));
+
+  const monthly = data.monthly;
+  const relevantTotal = monthly.reduce((s, m) => s + m.relevant, 0);
 
   return (
     <div className="space-y-6">
-      <dl className="grid gap-4 sm:grid-cols-3">
-        {[
-          { label: "Новостей за период", value: data.articles_total },
-          { label: "Важных для вас", value: importantTotal, hint: "высокая и критическая важность" },
-          { label: "Оценок моделью", value: llmCount, hint: "релевантность и полный анализ" },
-        ].map((s) => (
-          <div key={s.label} className="glass rounded-[var(--radius-lg)] px-5 py-4">
-            <dt className="text-[13px] text-ink-soft">{s.label}</dt>
-            <dd className="mt-1 text-[34px] font-semibold tracking-[-0.03em] tabular">{s.value}</dd>
-            {s.hint && <dd className="text-[12px] text-silver">{s.hint}</dd>}
-          </div>
-        ))}
-      </dl>
-
+      <KpiGrid kpi={data.kpi} />
       <div className="grid gap-6 lg:grid-cols-2">
-        <ChartPanel
-          title="Количество новостей по дням"
-          description="Всего и важных для вас (по лучшей доступной оценке)"
-          table={{ head: ["День", "Всего", "Важные"], rows: data.daily.map((d) => [fmtDay(d.day), d.total, d.important]) }}
-          empty={daily.length === 0 ? "Нет данных за период." : undefined}
-        >
-          <ResponsiveContainer>
-            <BarChart data={daily} barGap={2} margin={{ left: -18, right: 8, top: 8 }}>
-              <CartesianGrid vertical={false} stroke="#e2ecf6" />
-              <XAxis dataKey="day" tickFormatter={fmtDay} tick={AXIS} axisLine={false} tickLine={false} minTickGap={16} />
-              <YAxis allowDecimals={false} tick={AXIS} axisLine={false} tickLine={false} />
-              <Tooltip content={<TooltipBox labelFormatter={fmtDay} />} cursor={{ fill: "#e2ecf6", opacity: 0.5 }} />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, color: "#3a4d63" }} />
-              <Bar dataKey="Всего" fill={SERIES[0]} radius={[4, 4, 0, 0]} maxBarSize={18} />
-              <Bar dataKey="Важные" fill={SERIES[1]} radius={[4, 4, 0, 0]} maxBarSize={18} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartPanel>
+      <ChartPanel
+        className="lg:col-span-2"
+        title="Как новости отражаются на бизнесе"
+        description={`Новости, которые касаются вашей компании (оценка от ${data.min_score}), по месяцам и важности для вас`}
+        table={{
+          head: ["Месяц", "Всего новостей", "Касаются компании", ...IMPORTANCE_STEPS.map((x) => x.label), "Средняя оценка"],
+          rows: monthly.map((m) => [fmtMonth(m.month), m.total, m.relevant, m.critical, m.high, m.medium, m.low, m.avg_relevance]),
+        }}
+        empty={relevantTotal === 0 ? "За период нет новостей, которые касаются компании. Дополните профиль компании и интересы." : undefined}
+      >
+        <ResponsiveContainer>
+          <BarChart data={monthly} margin={{ left: -18, right: 8, top: 16 }} barCategoryGap="28%">
+            <CartesianGrid vertical={false} stroke="#e2e5ea" />
+            <XAxis dataKey="month" tickFormatter={fmtMonth} tick={AXIS} axisLine={false} tickLine={false} />
+            <YAxis allowDecimals={false} tick={AXIS} axisLine={false} tickLine={false} />
+            <Tooltip content={<MonthTooltip />} cursor={{ fill: "#eceef1", opacity: 0.6 }} />
+            <Legend content={() => <ImportanceLegend />} />
+            {IMPORTANCE_STEPS.map((x, i) => (
+              <Bar
+                key={x.key}
+                dataKey={x.key}
+                name={x.label}
+                stackId="imp"
+                fill={x.color}
+                stroke="#fbfcfd"
+                strokeWidth={1.5}
+                maxBarSize={48}
+                radius={i === IMPORTANCE_STEPS.length - 1 ? [4, 4, 0, 0] : 0}
+              />
+            ))}
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartPanel>
 
-        <ChartPanel
-          title="Распределение новостей по темам"
-          description="10 самых частых тем; у новостей без анализа темы размечены по словарю"
-          table={{
-            head: ["Тема", "Всего", "Моделью", "По словарю", "По материалу"],
-            rows: topicTotals.map((t) => [t.name, t.total, t.llm, t.keywords, t.metadata]),
-          }}
-          empty={topicTotals.length === 0 ? "Темы ещё не размечены." : undefined}
-        >
-          <ResponsiveContainer>
-            <BarChart data={topicTotals} layout="vertical" margin={{ left: 8, right: 24 }}>
-              <XAxis type="number" hide />
-              <YAxis type="category" dataKey="name" width={170} tick={{ ...AXIS, fill: "#3a4d63" }} axisLine={false} tickLine={false} />
-              <Tooltip content={<TooltipBox />} cursor={{ fill: "#e2ecf6", opacity: 0.5 }} />
-              <Bar dataKey="total" name="Новостей" fill={SERIES[0]} radius={[0, 4, 4, 0]} maxBarSize={14} label={{ position: "right", fontSize: 11, fill: "#3a4d63" }} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartPanel>
-
-        <ChartPanel
-          title="Динамика повестки"
-          description="Три самые частые темы периода по дням"
-          table={{
-            head: ["День", ...top3.map((t) => names.get(t) ?? t)],
-            rows: agenda.map((r) => [fmtDay(String(r.day)), ...top3.map((t) => Number(r[t] ?? 0))]),
-          }}
-          empty={top3.length === 0 ? "Недостаточно размеченных новостей." : undefined}
-        >
-          <ResponsiveContainer>
-            <LineChart data={agenda} margin={{ left: -18, right: 8, top: 8 }}>
-              <CartesianGrid vertical={false} stroke="#e2ecf6" />
-              <XAxis dataKey="day" tickFormatter={(d) => fmtDay(String(d))} tick={AXIS} axisLine={false} tickLine={false} minTickGap={16} />
-              <YAxis allowDecimals={false} tick={AXIS} axisLine={false} tickLine={false} />
-              <Tooltip content={<TooltipBox labelFormatter={fmtDay} />} />
-              <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, color: "#3a4d63" }} />
-              {top3.map((t, i) => (
-                <Line key={t} type="monotone" dataKey={t} name={names.get(t) ?? t} stroke={SERIES[i]} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+      <ChartPanel
+        title="Тип влияния"
+        description="Среди новостей, оценённых моделью"
+        table={{ head: ["Тип", "Оценок"], rows: impact.map((x) => [x.name, x.value]) }}
+        empty={llmCount === 0 ? "Нет оценок моделью за период. Откройте ленту и нажмите «Оценить ленту моделью»." : undefined}
+      >
+        <ResponsiveContainer>
+          <BarChart data={impact} margin={{ left: -18, right: 8, top: 16 }}>
+            <CartesianGrid vertical={false} stroke="#e2e5ea" />
+            <XAxis dataKey="name" tick={AXIS} axisLine={false} tickLine={false} interval={0} />
+            <YAxis allowDecimals={false} tick={AXIS} axisLine={false} tickLine={false} />
+            <Tooltip content={<TooltipBox />} cursor={{ fill: "#eceef1", opacity: 0.6 }} />
+            <Bar dataKey="value" name="Оценок" radius={[4, 4, 0, 0]} maxBarSize={44} label={{ position: "top", fontSize: 11, fill: "#46515f" }}>
+              {impact.map((x) => (
+                <Cell key={x.key} fill={IMPACT_COLOR[x.key]} />
               ))}
-            </LineChart>
-          </ResponsiveContainer>
-        </ChartPanel>
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </ChartPanel>
 
-        <ChartPanel
-          title="Темы, которые чаще всего затрагивают компанию"
-          description="По оценкам модели с релевантностью от 40"
-          table={{ head: ["Тема", "Совпадений"], rows: companyTopics.map((t) => [t.name, t.hits]) }}
-          empty={companyTopics.length === 0 ? "Появится после оценки новостей моделью: откройте ленту и нажмите «Оценить ленту моделью»." : undefined}
-        >
-          <ResponsiveContainer>
-            <BarChart data={companyTopics} layout="vertical" margin={{ left: 8, right: 24 }}>
-              <XAxis type="number" hide />
-              <YAxis type="category" dataKey="name" width={170} tick={{ ...AXIS, fill: "#3a4d63" }} axisLine={false} tickLine={false} />
-              <Tooltip content={<TooltipBox />} cursor={{ fill: "#e2ecf6", opacity: 0.5 }} />
-              <Bar dataKey="hits" name="Совпадений" fill={SERIES[0]} radius={[0, 4, 4, 0]} maxBarSize={14} label={{ position: "right", fontSize: 11, fill: "#3a4d63" }} />
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartPanel>
+      <ChartPanel
+        title="Динамика повестки"
+        description="Три самые частые темы периода по дням"
+        table={{
+          head: ["День", ...top3.map((t) => names.get(t) ?? t)],
+          rows: agenda.map((r) => [fmtDay(String(r.day)), ...top3.map((t) => Number(r[t] ?? 0))]),
+        }}
+        empty={top3.length === 0 ? "Недостаточно размеченных новостей." : undefined}
+      >
+        <ResponsiveContainer>
+          <LineChart data={agenda} margin={{ left: -18, right: 8, top: 8 }}>
+            <CartesianGrid vertical={false} stroke="#e2e5ea" />
+            <XAxis dataKey="day" tickFormatter={(d) => fmtDay(String(d))} tick={AXIS} axisLine={false} tickLine={false} minTickGap={16} />
+            <YAxis allowDecimals={false} tick={AXIS} axisLine={false} tickLine={false} />
+            <Tooltip content={<TooltipBox labelFormatter={fmtDay} />} />
+            <Legend iconType="circle" iconSize={8} wrapperStyle={{ fontSize: 12, color: "#46515f" }} />
+            {top3.map((t, i) => (
+              <Line key={t} type="monotone" dataKey={t} name={names.get(t) ?? t} stroke={SERIES[i]} strokeWidth={2} dot={{ r: 3 }} activeDot={{ r: 5 }} />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </ChartPanel>
       </div>
+    </div>
+  );
+}
 
-      <div className="grid gap-6 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.3fr)]">
-        <ChartPanel
-          title="Тип влияния"
-          description="Среди новостей, оценённых моделью"
-          table={{ head: ["Тип", "Оценок"], rows: impact.map((x) => [x.name, x.value]) }}
-          empty={llmCount === 0 ? "Нет оценок моделью за период." : undefined}
-        >
-          <ResponsiveContainer>
-            <BarChart data={impact} layout="vertical" margin={{ left: 8, right: 24 }}>
-              <XAxis type="number" hide />
-              <YAxis type="category" dataKey="name" width={150} tick={{ ...AXIS, fill: "#3a4d63" }} axisLine={false} tickLine={false} />
-              <Tooltip content={<TooltipBox />} cursor={{ fill: "#e2ecf6", opacity: 0.5 }} />
-              <Bar dataKey="value" name="Оценок" radius={[0, 4, 4, 0]} maxBarSize={16} label={{ position: "right", fontSize: 11, fill: "#3a4d63" }}>
-                {impact.map((x) => (
-                  <Cell key={x.key} fill={IMPACT_COLOR[x.key]} />
-                ))}
-              </Bar>
-            </BarChart>
-          </ResponsiveContainer>
-        </ChartPanel>
+function KpiGrid({ kpi }: { kpi: KPI }) {
+  const tiles: { label: string; value: string; sub: string; small?: boolean }[] = [
+    {
+      label: "Острота повестки",
+      value: kpi.acuteness.value == null ? "—" : `${kpi.acuteness.value}%`,
+      sub: kpi.acuteness.relevant
+        ? `значимых для компании новостей — высокой или критической важности (${kpi.acuteness.acute} из ${kpi.acuteness.relevant})`
+        : "за период нет новостей, которые касаются компании",
+    },
+    {
+      label: "Главный канал влияния",
+      value: kpi.channels.top?.name ?? "—",
+      sub: kpi.channels.top ? `${kpi.channels.top.share ?? 0}% значимых новостей · всего каналов: ${kpi.channels.count}` : "совпадений тем нет",
+      small: true,
+    },
+    {
+      label: "Самый напряжённый месяц",
+      value: kpi.peak_month ? fmtMonth(kpi.peak_month.month) : "—",
+      sub: kpi.peak_month ? `значимых для компании новостей: ${kpi.peak_month.relevant}` : "нет данных",
+      small: true,
+    },
+  ];
+  return (
+    <ul className="grid gap-4 sm:grid-cols-3">
+      {tiles.map((t) => (
+        <li key={t.label} className="glass rounded-[var(--radius-lg)] p-5">
+          <p className="text-[13px] text-ink-soft">{t.label}</p>
+          <p className={cn("mt-1.5 font-semibold tracking-[-0.02em] tabular", t.small ? "text-[22px] leading-tight" : "text-[34px] leading-none", "text-ink")}>
+            {t.value}
+          </p>
+          <p className="mt-2 text-[12px] leading-snug text-silver">{t.sub}</p>
+        </li>
+      ))}
+    </ul>
+  );
+}
 
-        <Panel title="Основные риски и возможности" description="Из полных ИИ-анализов за период, по релевантности">
-          {data.risks_opportunities.length === 0 ? (
-            <p className="py-8 text-center text-sm text-ink-soft">Появятся после первого полного анализа новости.</p>
-          ) : (
-            <ul className="space-y-3">
-              {data.risks_opportunities.slice(0, 8).map((r, i) => (
-                <li key={i} className={cn("border-l-2 pl-3", r.kind === "risk" ? "border-risk" : "border-chance")}>
-                  <p className="text-[14px] font-medium">
-                    <span className="sr-only">{r.kind === "risk" ? "Риск: " : "Возможность: "}</span>
-                    {r.item_title}
-                  </p>
-                  <Link href={`/news/${r.article_id}`} className="text-[12px] text-silver hover:text-steel">
-                    {r.title}
-                  </Link>
-                </li>
-              ))}
-            </ul>
-          )}
-        </Panel>
-      </div>
+// Легенда в порядке шкалы (recharts иначе сортирует подписи по алфавиту).
+function ImportanceLegend() {
+  return (
+    <ul className="flex flex-wrap justify-center gap-x-4 gap-y-1 pt-2 text-[12px] text-ink-soft">
+      {IMPORTANCE_STEPS.map((x) => (
+        <li key={x.key} className="flex items-center gap-1.5">
+          <span className="size-2 rounded-full" style={{ background: x.color }} aria-hidden />
+          {x.label}
+        </li>
+      ))}
+    </ul>
+  );
+}
 
-      <ul className="space-y-1 text-[12px] text-silver">
-        {data.notes.map((n) => (
-          <li key={n}>{n}</li>
-        ))}
-      </ul>
+function MonthTooltip({ active, payload, label }: { active?: boolean; payload?: { payload: Month }[]; label?: string }) {
+  if (!active || !payload?.length || !label) return null;
+  const m = payload[0].payload;
+  return (
+    <div className="rounded-[10px] border border-white bg-white/95 px-3 py-2 text-[12px] shadow-[var(--shadow-soft)]">
+      <p className="mb-1 font-medium text-ink">{fmtMonth(label)}</p>
+      <p className="text-ink-soft">
+        Касаются компании: <span className="font-medium text-ink tabular">{m.relevant}</span> из {m.total}
+      </p>
+      {IMPORTANCE_STEPS.filter((x) => m[x.key] > 0).map((x) => (
+        <p key={x.key} className="flex items-center gap-2 text-ink-soft">
+          <span className="size-2 rounded-full" style={{ background: x.color }} aria-hidden />
+          {x.label}: <span className="font-medium text-ink tabular">{m[x.key]}</span>
+        </p>
+      ))}
+      {m.relevant > 0 && <p className="mt-1 text-silver">Средняя оценка: {m.avg_relevance}</p>}
     </div>
   );
 }

@@ -15,7 +15,7 @@ import { formatDate, horizonLabel, impactLabel, likelihoodLabel } from "@/lib/fo
 import type { ArticleDetail, Evidence, FullAnalysis, Insight, RiskOpp, Run } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
-import { ImportanceBadge, MethodTag, RelevanceMeter, SaveButton, SourceLine, WhyItMatters, impactTone } from "./parts";
+import { ImportanceBadge, MethodTag, RelevanceMeter, SaveButton, ShareButton, SourceLine, WhyItMatters, impactTone } from "./parts";
 
 const basisMeta = {
   fact: { label: "Факт из новости", tone: "neutral" as const },
@@ -77,6 +77,7 @@ function Article({ a, onAnalyzed }: { a: ArticleDetail; onAnalyzed: (x: FullAnal
             </Badge>
           ))}
           <SaveButton id={a.id} saved={a.is_saved} />
+          <ShareButton id={a.id} title={a.title} url={a.url} withLabel />
           {a.source.kind === "user_submitted" && <Badge tone="mixed">Добавлено вручную, достоверность не проверена</Badge>}
         </div>
       </header>
@@ -111,7 +112,7 @@ function Lens({ a, insight }: { a: ArticleDetail; insight?: Insight }) {
   const method = insight ? "llm" : a.brief?.method;
   return (
     <section className="relative mt-8 overflow-hidden rounded-[var(--radius-xl)]" aria-label="Контекст анализа">
-      <div aria-hidden className="absolute inset-0 bg-cover bg-[center_right]" style={{ backgroundImage: "url(/waves.jpg)" }} />
+      <div aria-hidden className="app-backdrop absolute inset-0" />
       <div className="glass relative flex flex-wrap items-center gap-x-8 gap-y-4 rounded-[var(--radius-xl)] bg-white/55 p-5 sm:p-6">
         {score != null && method && <RelevanceMeter score={score} method={method} size={64} />}
         <div className="min-w-[200px] flex-1">
@@ -362,6 +363,7 @@ function AnalysisBody({
         </Panel>
 
         <Feedback article={article} />
+        <Disclaimer />
       </div>
 
       <aside className="space-y-6">
@@ -376,6 +378,17 @@ function AnalysisBody({
         <Rerun articleId={article.id} createdAt={analysis.created_at} onDone={onRerun} />
       </aside>
     </div>
+  );
+}
+
+// Обязательный дисклеймер (ответ организаторов на вебинаре, п. 49).
+export function Disclaimer() {
+  return (
+    <p className="px-1 text-[12px] leading-relaxed text-silver">
+      Материал подготовлен автоматически на основе открытых источников и аналитики Альфа-Банка и не является
+      индивидуальной инвестиционной рекомендацией. Выводы, помеченные как «вывод модели», сформированы ИИ и не
+      отражают официальную позицию банка.
+    </p>
   );
 }
 

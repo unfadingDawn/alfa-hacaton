@@ -3,7 +3,7 @@ SELECT * FROM companies WHERE id = @id;
 
 -- name: SearchCompanies :many
 SELECT id, display_name, okved_code, okved_name, region, city, revenue,
-       client_type, eco_stage, workers_fns, group_id
+       client_type, eco_stage, workers_fns, group_id, group_revenue, group_size
 FROM companies
 WHERE (sqlc.narg('q')::text IS NULL
          OR id = sqlc.narg('q')::text
@@ -11,8 +11,10 @@ WHERE (sqlc.narg('q')::text IS NULL
          OR okved_code LIKE sqlc.narg('q')::text || '%'
          OR display_name ILIKE '%' || sqlc.narg('q')::text || '%')
   AND (sqlc.narg('region')::text IS NULL OR region = sqlc.narg('region')::text)
-  AND (sqlc.narg('min_revenue')::numeric IS NULL OR revenue >= sqlc.narg('min_revenue')::numeric)
-ORDER BY revenue DESC NULLS LAST, id
+  -- Сегмент крупного бизнеса определяется по выручке группы компаний (ответ организаторов).
+  AND (sqlc.narg('min_revenue')::numeric IS NULL OR group_revenue >= sqlc.narg('min_revenue')::numeric)
+  AND (NOT @clients_only::boolean OR client_type = 'CLIENT')
+ORDER BY revenue DESC NULLS LAST, group_revenue DESC NULLS LAST, id
 LIMIT @lim OFFSET @off;
 
 -- name: ListCompanyRegions :many
@@ -123,7 +125,7 @@ ORDER BY file_name, kind;
 -- name: DatasetStats :one
 SELECT
   (SELECT count(*) FROM companies)::int     AS companies,
-  (SELECT count(*) FROM companies WHERE revenue >= 15000000000)::int AS large_companies,
+  (SELECT count(*) FROM companies WHERE group_revenue >= 15000000000)::int AS large_companies,
   (SELECT count(*) FROM person_links)::int  AS person_links,
   (SELECT count(*) FROM payments)::int      AS payments;
 

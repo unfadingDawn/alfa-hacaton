@@ -20,6 +20,7 @@ export type Me = {
   work_focus: string;
   personalization: Personalization;
   onboarding_completed: boolean;
+  avatar?: string | null;
   interests: { topic_code: string; weight: number; name: string }[];
   companies: {
     id: string;
@@ -51,6 +52,28 @@ export type Industry = {
   amount: number;
   share: number;
 };
+export type Application = { product: string; amount?: number | null; status?: string };
+
+// Сведения с главного экрана личного кабинета «Альфа-Бизнес» (все необязательные).
+export type BusinessProfile = {
+  source?: "user" | "alfa_business";
+  updated_at?: string;
+  legal_name?: string;
+  manager_name?: string;
+  companies_in_account?: number;
+  accounts_rub?: number;
+  accounts_fx?: number;
+  currencies?: string[];
+  balance_rub?: number | null;
+  overdraft_available?: boolean | null;
+  balance_with_overdraft_rub?: number | null;
+  business_cards?: boolean | null;
+  tariff?: string;
+  risk_indicator?: "" | "low" | "medium" | "high";
+  gov_procurement?: boolean | null;
+  applications?: Application[];
+};
+
 export type UserCompanyProfile = {
   description?: string;
   products?: string;
@@ -58,6 +81,7 @@ export type UserCompanyProfile = {
   suppliers?: string;
   priorities?: string[];
   notes?: string;
+  business?: BusinessProfile;
 };
 export type CompanyProfile = {
   id: string;
@@ -68,6 +92,8 @@ export type CompanyProfile = {
   region: string;
   city: string;
   revenue: number | null;
+  group_revenue?: number | null;
+  group_size?: number;
   size_segment: string;
   is_large: boolean;
   facts: Fact[];
@@ -103,6 +129,8 @@ export type CompanySearchItem = {
   region: string | null;
   city: string | null;
   revenue: number | null;
+  group_revenue: number | null;
+  group_size: number | null;
   size_segment: string;
   is_large: boolean;
   client_type: string | null;

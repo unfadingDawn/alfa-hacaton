@@ -1,8 +1,6 @@
-import type { Metadata } from "next";
-import { SettingsView } from "@/features/settings/settings";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Настройки" };
-
+// Настройки объединены с разделом «Компания» в «Личный кабинет».
 export default function SettingsPage() {
-  return <SettingsView />;
+  redirect("/cabinet");
 }

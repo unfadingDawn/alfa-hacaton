@@ -2,6 +2,7 @@
 package users
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -56,6 +57,8 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Put("/me/profile", h.updateProfile)
 	r.Put("/me/interests", h.updateInterests)
 	r.Put("/me/personalization", h.updatePersonalization)
+	r.Put("/me/avatar", h.updateAvatar)
+	r.Delete("/me/avatar", h.deleteAvatar)
 	r.Post("/me/companies", h.attachCompany)
 	r.Post("/me/onboarding/complete", h.completeOnboarding)
 	r.Get("/topics", h.topics)
@@ -88,7 +91,7 @@ func (h *Handler) me(w http.ResponseWriter, r *http.Request) {
 		"id": u.ID, "email": u.Email, "full_name": u.FullName, "role_code": u.RoleCode, "role": role,
 		"position_title": u.PositionTitle, "work_focus": u.WorkFocus,
 		"personalization": ParsePersonalization(u.Personalization), "onboarding_completed": u.OnboardingCompleted,
-		"interests": interests, "companies": comps, "created_at": u.CreatedAt,
+		"interests": interests, "companies": comps, "created_at": u.CreatedAt, "avatar": u.Avatar,
 	})
 }
 
@@ -109,6 +112,15 @@ func ValidateProfile(req *profileReq) map[string]string {
 	}
 	if _, ok := roles.Get(req.RoleCode); !ok {
 		errs["role_code"] = "Выберите роль из списка"
+	}
+	// Должность отдельно не запрашивается: для «Иного сотрудника» пользователь
+	// сам описывает свою роль, для остальных используется название роли.
+	if req.RoleCode == "other" {
+		if n := utf8.RuneCountInString(req.PositionTitle); n < 2 {
+			errs["position_title"] = "Опишите вашу роль"
+		}
+	} else if r, ok := roles.Get(req.RoleCode); ok {
+		req.PositionTitle = r.Title
 	}
 	if utf8.RuneCountInString(req.PositionTitle) > 120 {
 		errs["position_title"] = "Не более 120 символов"
@@ -350,4 +362,51 @@ func (h *Handler) changed(uid uuid.UUID) {
 	if h.OnProfileChanged != nil {
 		h.OnProfileChanged(uid)
 	}
+}
+
+// Фото профиля: data URL изображения (JPEG/PNG/WebP), уменьшенного на клиенте.
+const maxAvatarBytes = 400 * 1024
+
+var avatarPrefixes = []string{"data:image/jpeg;base64,", "data:image/png;base64,", "data:image/webp;base64,"}
+
+func ValidateAvatar(dataURL string) string {
+	if len(dataURL) > maxAvatarBytes {
+		return "Изображение слишком большое (до 300 КБ)"
+	}
+	for _, p := range avatarPrefixes {
+		if strings.HasPrefix(dataURL, p) {
+			b64 := dataURL[len(p):]
+			if _, err := base64.StdEncoding.DecodeString(b64); err != nil || len(b64) < 100 {
+				return "Не удалось прочитать изображение"
+			}
+			return ""
+		}
+	}
+	return "Поддерживаются JPEG, PNG и WebP"
+}
+
+func (h *Handler) updateAvatar(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		DataURL string `json:"data_url"`
+	}
+	if !httpx.DecodeOrFail(w, r, &req) {
+		return
+	}
+	if msg := ValidateAvatar(req.DataURL); msg != "" {
+		httpx.ValidationError(w, map[string]string{"avatar": msg})
+		return
+	}
+	if err := h.Q.UpdateUserAvatar(r.Context(), dbq.UpdateUserAvatarParams{ID: auth.UserID(r.Context()), Avatar: &req.DataURL}); err != nil {
+		httpx.Internal(w, h.Log, err, "avatar")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
+}
+
+func (h *Handler) deleteAvatar(w http.ResponseWriter, r *http.Request) {
+	if err := h.Q.UpdateUserAvatar(r.Context(), dbq.UpdateUserAvatarParams{ID: auth.UserID(r.Context())}); err != nil {
+		httpx.Internal(w, h.Log, err, "avatar")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"ok": true})
 }

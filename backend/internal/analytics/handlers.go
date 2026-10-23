@@ -125,9 +125,9 @@ func marketRows(in []dbq.ListMarketNewsRow) []dbq.ListFeedRow {
 func (h *Handler) analytics(w http.ResponseWriter, r *http.Request) {
 	ctx := r.Context()
 	uid := auth.UserID(ctx)
-	days := map[string]int{"7d": 7, "30d": 30, "90d": 90}[r.URL.Query().Get("period")]
+	days := map[string]int{"7d": 7, "30d": 30, "90d": 90, "180d": 180, "365d": 365}[r.URL.Query().Get("period")]
 	if days == 0 {
-		days = 30
+		days = 365
 	}
 	since := time.Now().AddDate(0, 0, -days)
 	if _, err := h.Agent.ScoreByRules(ctx, uid); err != nil {
@@ -164,25 +164,95 @@ func (h *Handler) analytics(w http.ResponseWriter, r *http.Request) {
 		httpx.Internal(w, h.Log, err, "ro")
 		return
 	}
+	const minScore = 25 // «касается компании»: с этой оценки правила ставят среднюю важность
+	monthly, err := h.Q.UserMonthlyExposure(ctx, dbq.UserMonthlyExposureParams{
+		Tz: h.Cfg.Timezone.String(), MinScore: minScore, UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "monthly")
+		return
+	}
+	channels, err := h.Q.UserExposureChannels(ctx, dbq.UserExposureChannelsParams{UserID: uid, Since: since, MinScore: minScore})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "channels")
+		return
+	}
 	total := 0
 	for _, d := range daily {
 		total += int(d.Total)
 	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
-		"period_days":          days,
-		"articles_total":       total,
-		"topic_distribution":   dist,
-		"daily":                daily,
-		"daily_topics":         dailyTopics,
-		"company_topics":       matched,
-		"impact":               impact,
-		"risks_opportunities":  ro,
-		"sufficient":           map[string]bool{"articles": total > 0, "llm_analyses": len(impact) > 0},
+		"period_days":         days,
+		"articles_total":      total,
+		"topic_distribution":  dist,
+		"daily":               daily,
+		"daily_topics":        dailyTopics,
+		"company_topics":      matched,
+		"impact":              impact,
+		"risks_opportunities": ro,
+		"monthly":             monthly,
+		"channels":            channels,
+		"kpi":                 exposureKPI(monthly, channels),
+		"min_score":           minScore,
+		"sufficient":          map[string]bool{"articles": total > 0, "llm_analyses": len(impact) > 0},
 		"notes": []string{
 			"Темы статей размечены моделью (llm), по словарю без ИИ (keywords) или по названию материала банка (metadata) — см. поле method.",
-			"«Темы, которые затрагивают компанию» и распределение рисков/возможностей считаются только по оценкам модели.",
+			"Тип влияния, баланс и накопленное влияние считаются только по оценкам модели; помесячная значимость и каналы влияния — по лучшей доступной оценке (модель или правила).",
 		},
 	})
+}
+
+// exposureKPI сводит помесячный срез в показатели периода. Если для показателя
+// нет данных (например, модель ещё ничего не оценивала), значение — nil.
+func exposureKPI(rows []dbq.UserMonthlyExposureRow, channels []dbq.UserExposureChannelsRow) map[string]any {
+	var total, relevant, acute, risks, opps, mixed, rated, net, full, bank int
+	peak := map[string]any(nil)
+	for _, m := range rows {
+		total += int(m.Total)
+		relevant += int(m.Relevant)
+		acute += int(m.Critical + m.High)
+		risks += int(m.Risks)
+		opps += int(m.Opportunities)
+		mixed += int(m.Mixed)
+		rated += int(m.LlmRated)
+		net += int(m.NetImpact)
+		full += int(m.FullAnalyses)
+		bank += int(m.WithBankView)
+		if m.Relevant > 0 && (peak == nil || int(m.Relevant) > peak["relevant"].(int)) {
+			peak = map[string]any{"month": m.Month, "relevant": int(m.Relevant)}
+		}
+	}
+	pct := func(a, b int) any {
+		if b == 0 {
+			return nil
+		}
+		return int(float64(a)/float64(b)*100 + 0.5)
+	}
+	var balance any
+	if d := risks + opps + mixed; d > 0 {
+		balance = int(float64(opps-risks)/float64(d)*100 + 0.5*sign(opps-risks))
+	}
+	var top any
+	if len(channels) > 0 {
+		top = map[string]any{"code": channels[0].Code, "name": channels[0].Name, "articles": channels[0].Articles, "share": pct(int(channels[0].Articles), relevant)}
+	}
+	return map[string]any{
+		"relevant_share": map[string]any{"value": pct(relevant, total), "relevant": relevant, "total": total},
+		"acuteness":      map[string]any{"value": pct(acute, relevant), "acute": acute, "relevant": relevant},
+		"balance":        map[string]any{"value": balance, "risks": risks, "opportunities": opps, "mixed": mixed, "rated": rated, "net_impact": net},
+		"bank_backed":    map[string]any{"value": pct(bank, full), "with_bank_view": bank, "full": full},
+		"channels":       map[string]any{"count": len(channels), "top": top},
+		"peak_month":     peak,
+	}
+}
+
+func sign(x int) float64 {
+	switch {
+	case x > 0:
+		return 1
+	case x < 0:
+		return -1
+	}
+	return 0
 }
 
 func (h *Handler) llmBrief() map[string]any {

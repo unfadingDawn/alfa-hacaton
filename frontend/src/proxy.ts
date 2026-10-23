@@ -2,7 +2,7 @@ import { NextResponse, type NextRequest } from "next/server";
 
 // Быстрая проверка наличия сессии до рендера защищённых страниц.
 // Подпись токена проверяет backend; здесь — только перенаправление.
-const protectedPrefixes = ["/home", "/feed", "/news", "/analytics", "/company", "/saved", "/settings", "/onboarding", "/research"];
+const protectedPrefixes = ["/home", "/feed", "/news", "/analytics", "/company", "/saved", "/settings", "/cabinet", "/support", "/onboarding", "/research"];
 
 export function proxy(req: NextRequest) {
   const { pathname } = req.nextUrl;

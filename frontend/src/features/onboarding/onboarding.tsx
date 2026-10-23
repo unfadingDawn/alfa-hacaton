@@ -16,9 +16,11 @@ import type { CompanyProfile, CompanySearchItem, Me, Role, Topic } from "@/lib/t
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { CompanyFacts } from "@/features/company/facts";
+import { BusinessFields, cleanBusiness } from "@/features/company/business-fields";
+import type { BusinessProfile } from "@/lib/types";
 
 type UserForm = { full_name: string; role_code: string; position_title: string; work_focus: string; topics: string[] };
-type CompanyForm = { display_name: string; description: string; products: string; markets: string; suppliers: string; priorities: string };
+type CompanyForm = { display_name: string; description: string; products: string; markets: string; suppliers: string; priorities: string; business: BusinessProfile };
 
 export function Onboarding() {
   const router = useRouter();
@@ -45,8 +47,7 @@ export function Onboarding() {
   const error = me.error || roles.error || topics.error;
   return (
     <div className="relative min-h-dvh">
-      <div aria-hidden className="fixed inset-x-0 top-0 h-[340px] bg-cover bg-center opacity-60" style={{ backgroundImage: "url(/waves.jpg)" }} />
-      <div aria-hidden className="fixed inset-x-0 top-0 h-[340px] bg-gradient-to-b from-ice/30 to-ice" />
+      <div aria-hidden className="app-backdrop fixed inset-0" />
       <div className="relative mx-auto max-w-[920px] px-4 py-6 sm:px-8">
         <Logo href="/onboarding" />
         <div className="mt-10">
@@ -109,13 +110,19 @@ function UserStep({ value, roles, topics, onDone }: { value: UserForm; roles: Ro
     const e: Record<string, string> = {};
     if (form.full_name.trim().length < 2) e.full_name = "Укажите имя";
     if (!form.role_code) e.role_code = "Выберите роль";
+    if (form.role_code === "other" && form.position_title.trim().length < 2) e.position_title = "Опишите вашу роль";
     setErrors(e);
     if (Object.keys(e).length) return;
     setSaving(true);
     try {
       await api("/me/profile", {
         method: "PUT",
-        body: { full_name: form.full_name, role_code: form.role_code, position_title: form.position_title, work_focus: form.work_focus },
+        body: {
+          full_name: form.full_name,
+          role_code: form.role_code,
+          position_title: form.role_code === "other" ? form.position_title : "",
+          work_focus: form.work_focus,
+        },
       });
       await api("/me/interests", { method: "PUT", body: { topics: form.topics.map((code) => ({ code, weight: 2 })) } });
       onDone(form);
@@ -134,16 +141,13 @@ function UserStep({ value, roles, topics, onDone }: { value: UserForm; roles: Ro
     <div className="glass rounded-[var(--radius-xl)] p-6 sm:p-8">
       <h2 className="text-[22px] font-semibold tracking-[-0.02em]">Кто вы в компании</h2>
       <p className="mt-1 text-sm text-ink-soft">Роль определяет, через какую линзу модель смотрит на каждую новость.</p>
-      <div className="mt-6 grid gap-5 sm:grid-cols-2">
-        <Field id="full_name" label="Имя и фамилия" error={errors.full_name}>
-          <Input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
-        </Field>
-        <Field id="position_title" label="Должность" hint="Как она называется у вас в компании">
-          <Input value={form.position_title} onChange={(e) => setForm({ ...form, position_title: e.target.value })} placeholder={role?.title ?? ""} />
-        </Field>
-      </div>
+      <Field id="full_name" label="Имя и фамилия" error={errors.full_name} required className="mt-6 max-w-[420px]">
+        <Input value={form.full_name} onChange={(e) => setForm({ ...form, full_name: e.target.value })} />
+      </Field>
       <fieldset className="mt-6">
-        <legend className="text-[13px] font-medium text-ink-soft">Роль в принятии решений</legend>
+        <legend className="text-[13px] font-medium text-ink-soft">
+          Роль в принятии решений<span className="ml-0.5 text-steel" aria-hidden>*</span>
+        </legend>
         {errors.role_code && <p className="mt-1 text-[13px] text-risk">{errors.role_code}</p>}
         <div className="mt-2 grid gap-2 sm:grid-cols-3">
           {roles.map((r) => (
@@ -159,7 +163,13 @@ function UserStep({ value, roles, topics, onDone }: { value: UserForm; roles: Ro
             </label>
           ))}
         </div>
-        {role && <p className="mt-3 text-[13px] text-ink-soft">В анализе для этой роли важны: {role.focus.join(", ")}.</p>}
+        {form.role_code === "other" ? (
+          <Field id="position_title" label="Ваша роль в компании" hint="Например: директор по ВЭД, руководитель проектного офиса" error={errors.position_title} required className="mt-4 max-w-[520px]">
+            <Input value={form.position_title} onChange={(e) => setForm({ ...form, position_title: e.target.value })} />
+          </Field>
+        ) : (
+          role && <p className="mt-3 text-[13px] text-ink-soft">В анализе для этой роли важны: {role.focus.join(", ")}.</p>
+        )}
       </fieldset>
       <Field id="work_focus" label="Рабочие интересы" hint="Например: рефинансирование кредитного портфеля, закупки сырья в Китае" className="mt-6">
         <Textarea value={form.work_focus} onChange={(e) => setForm({ ...form, work_focus: e.target.value })} maxLength={1000} />
@@ -201,6 +211,7 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
   const [q, setQ] = useState("");
   const [region, setRegion] = useState("");
   const [largeOnly, setLargeOnly] = useState(true);
+  const [clientsOnly, setClientsOnly] = useState(true);
   const [selected, setSelected] = useState<string | null>(initial?.id ?? null);
   const [preview, setPreview] = useState<CompanyProfile | null>(initial);
   const [form, setForm] = useState<CompanyForm>(() => toForm(initial));
@@ -211,8 +222,9 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
     if (q.trim()) p.set("q", q.trim());
     if (region) p.set("region", region);
     if (largeOnly) p.set("min_revenue", "15000000000");
+    if (clientsOnly) p.set("clients_only", "true");
     return `/companies/search?${p}`;
-  }, [q, region, largeOnly]);
+  }, [q, region, largeOnly, clientsOnly]);
   const [debounced, setDebounced] = useState(query);
   useEffect(() => {
     const t = setTimeout(() => setDebounced(query), 300);
@@ -232,8 +244,19 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
     }
   }
 
+  const [errors, setErrors] = useState<Record<string, string>>({});
   async function save() {
     if (!selected) return;
+    const fe: Record<string, string> = {};
+    if (!form.display_name.trim()) fe.display_name = "Обязательное поле";
+    if (!form.products.trim()) fe.products = "Обязательное поле";
+    if (!form.markets.trim()) fe.markets = "Обязательное поле";
+    if (!form.suppliers.trim()) fe.suppliers = "Обязательное поле";
+    setErrors(fe);
+    if (Object.keys(fe).length) {
+      toast.error("Заполните обязательные поля");
+      return;
+    }
     setSaving(true);
     try {
       const p = await api<CompanyProfile>("/me/companies", {
@@ -247,11 +270,13 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
             markets: form.markets,
             suppliers: form.suppliers,
             priorities: form.priorities.split("\n").map((s) => s.trim()).filter(Boolean),
+            business: cleanBusiness(form.business),
           },
         },
       });
       onDone(p);
     } catch (e) {
+      if (e instanceof ApiError && e.fields) setErrors(e.fields);
       toast.error(errorMessage(e));
     } finally {
       setSaving(false);
@@ -278,10 +303,16 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
               </option>
             ))}
           </Select>
-          <label className="flex items-center gap-2 text-[13px] text-ink-soft">
-            <input type="checkbox" checked={largeOnly} onChange={(e) => setLargeOnly(e.target.checked)} className="size-4 accent-steel" />
-            От 15 млрд ₽
-          </label>
+          <div className="flex flex-col gap-1.5">
+            <label className="flex items-center gap-2 text-[13px] text-ink-soft" title="Сегмент определяется по выручке группы компаний">
+              <input type="checkbox" checked={largeOnly} onChange={(e) => setLargeOnly(e.target.checked)} className="size-4 accent-steel" />
+              Группа от 15 млрд ₽
+            </label>
+            <label className="flex items-center gap-2 text-[13px] text-ink-soft">
+              <input type="checkbox" checked={clientsOnly} onChange={(e) => setClientsOnly(e.target.checked)} className="size-4 accent-steel" />
+              Только клиенты банка
+            </label>
+          </div>
         </div>
         <div className="mt-4 max-h-[440px] space-y-1.5 overflow-y-auto pr-1" aria-live="polite">
           {results.loading && !results.data ? (
@@ -289,7 +320,7 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
           ) : results.error ? (
             <ErrorState error={results.error} onRetry={results.reload} />
           ) : results.data?.items.length === 0 ? (
-            <p className="py-6 text-center text-sm text-ink-soft">Ничего не найдено. Измените запрос или снимите фильтр по выручке.</p>
+            <p className="py-6 text-center text-sm text-ink-soft">Ничего не найдено. Измените запрос или снимите фильтры. Если список пуст при любых условиях — данные компаний ещё не загружены (команда importer).</p>
           ) : (
             results.data?.items.map((c) => (
               <button
@@ -303,6 +334,7 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
                 <span className="line-clamp-1 text-sm font-medium text-ink">{c.display_name || c.okved_name}</span>
                 <span className="mt-0.5 block text-[12px] text-silver">
                   {c.id}, ОКВЭД {c.okved_code}, {c.region ?? "регион не указан"}, выручка {formatRub(c.revenue)}
+                  {c.group_size && c.group_size > 1 ? `, группа ${formatRub(c.group_revenue)}` : ""}
                 </span>
               </button>
             ))
@@ -332,25 +364,26 @@ function CompanyStep({ initial, onBack, onDone }: { initial: CompanyProfile | nu
             <CompanyFacts facts={preview.facts} compact className="mt-4" />
             <div className="mt-6 border-t border-line pt-5">
               <p className="text-sm font-medium">Что знаете только вы</p>
-              <p className="text-[13px] text-silver">Необязательно, но так анализ будет точнее. Исходные данные банка не изменятся.</p>
+              <p className="text-[13px] text-silver">Так анализ будет точнее. Исходные данные банка не изменятся.</p>
               <div className="mt-4 grid gap-4">
-                <Field id="display_name" label="Как называть компанию">
+                <Field id="display_name" label="Как называть компанию" error={errors.display_name} required>
                   <Input value={form.display_name} onChange={(e) => setForm({ ...form, display_name: e.target.value })} placeholder="Например: ООО «Северная логистика»" />
                 </Field>
-                <Field id="products" label="Продукты и услуги">
+                <Field id="products" label="Продукты и услуги" error={errors.products} required>
                   <Input value={form.products} onChange={(e) => setForm({ ...form, products: e.target.value })} />
                 </Field>
-                <div className="grid gap-4 sm:grid-cols-2">
-                  <Field id="markets" label="Рынки и клиенты">
+                <div className="grid items-start gap-4 sm:grid-cols-2">
+                  <Field id="markets" label="Рынки и клиенты" error={errors.markets} required>
                     <Input value={form.markets} onChange={(e) => setForm({ ...form, markets: e.target.value })} />
                   </Field>
-                  <Field id="suppliers" label="Ключевые поставщики и сырьё">
+                  <Field id="suppliers" label="Поставщики и сырьё" error={errors.suppliers} required>
                     <Input value={form.suppliers} onChange={(e) => setForm({ ...form, suppliers: e.target.value })} />
                   </Field>
                 </div>
-                <Field id="priorities" label="Приоритеты бизнеса" hint="Каждый с новой строки">
-                  <Textarea value={form.priorities} onChange={(e) => setForm({ ...form, priorities: e.target.value })} />
+                <Field id="priorities" label="Приоритеты бизнеса" error={errors.priorities}>
+                  <Textarea value={form.priorities} onChange={(e) => setForm({ ...form, priorities: e.target.value })} placeholder="Необязательно" />
                 </Field>
+                <BusinessFields value={form.business} onChange={(b) => setForm({ ...form, business: b })} errors={errors} />
               </div>
             </div>
           </div>
@@ -378,6 +411,7 @@ function toForm(p: CompanyProfile | null): CompanyForm {
     markets: u.markets ?? "",
     suppliers: u.suppliers ?? "",
     priorities: (u.priorities ?? []).join("\n"),
+    business: u.business ?? {},
   };
 }
 

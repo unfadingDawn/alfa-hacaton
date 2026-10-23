@@ -207,6 +207,56 @@ func (q *Queries) TopicDistributionByMethod(ctx context.Context, since time.Time
 	return items, nil
 }
 
+const userExposureChannels = `-- name: UserExposureChannels :many
+SELECT t.code, t.name, count(*)::int AS articles
+FROM articles a
+JOIN LATERAL (
+  SELECT x.relevance_score, x.matched_topics
+  FROM personal_analyses x
+  WHERE x.article_id = a.id AND x.user_id = $1
+  ORDER BY (x.depth = 'full') DESC, (x.method = 'llm') DESC
+  LIMIT 1
+) b ON true
+JOIN topics t ON t.code = ANY (b.matched_topics)
+WHERE a.duplicate_of IS NULL AND a.published_at >= $2 AND b.relevance_score >= $3::int
+GROUP BY t.code, t.name
+ORDER BY articles DESC
+LIMIT 10
+`
+
+type UserExposureChannelsParams struct {
+	UserID   uuid.UUID `json:"user_id"`
+	Since    time.Time `json:"since"`
+	MinScore int32     `json:"min_score"`
+}
+
+type UserExposureChannelsRow struct {
+	Code     string `json:"code"`
+	Name     string `json:"name"`
+	Articles int32  `json:"articles"`
+}
+
+// Каналы влияния: через какие темы значимые новости касаются компании (любая оценка).
+func (q *Queries) UserExposureChannels(ctx context.Context, arg UserExposureChannelsParams) ([]UserExposureChannelsRow, error) {
+	rows, err := q.db.Query(ctx, userExposureChannels, arg.UserID, arg.Since, arg.MinScore)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserExposureChannelsRow{}
+	for rows.Next() {
+		var i UserExposureChannelsRow
+		if err := rows.Scan(&i.Code, &i.Name, &i.Articles); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const userImpactCounts = `-- name: UserImpactCounts :many
 SELECT impact_type, importance_level, count(*)::int AS analyses
 FROM personal_analyses
@@ -278,6 +328,107 @@ func (q *Queries) UserMatchedTopics(ctx context.Context, arg UserMatchedTopicsPa
 	for rows.Next() {
 		var i UserMatchedTopicsRow
 		if err := rows.Scan(&i.Topic, &i.Hits); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userMonthlyExposure = `-- name: UserMonthlyExposure :many
+SELECT to_char(date_trunc('month', a.published_at AT TIME ZONE $1::text), 'YYYY-MM')::text AS month,
+       count(*)::int AS total,
+       count(*) FILTER (WHERE b.relevance_score >= $2::int)::int AS relevant,
+       count(*) FILTER (WHERE b.relevance_score >= $2::int AND b.importance_level = 'critical')::int AS critical,
+       count(*) FILTER (WHERE b.relevance_score >= $2::int AND b.importance_level = 'high')::int AS high,
+       count(*) FILTER (WHERE b.relevance_score >= $2::int AND b.importance_level = 'medium')::int AS medium,
+       count(*) FILTER (WHERE b.relevance_score >= $2::int AND b.importance_level = 'low')::int AS low,
+       coalesce(round(avg(b.relevance_score) FILTER (WHERE b.relevance_score >= $2::int)), 0)::int AS avg_relevance,
+       count(*) FILTER (WHERE b.method = 'llm')::int AS llm_rated,
+       count(*) FILTER (WHERE b.method = 'llm' AND b.impact_type = 'risk')::int AS risks,
+       count(*) FILTER (WHERE b.method = 'llm' AND b.impact_type = 'opportunity')::int AS opportunities,
+       count(*) FILTER (WHERE b.method = 'llm' AND b.impact_type = 'mixed')::int AS mixed,
+       coalesce(sum(
+         (CASE b.impact_type WHEN 'risk' THEN -1 WHEN 'opportunity' THEN 1 ELSE 0 END) *
+         (CASE b.importance_level WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 ELSE 1 END)
+       ) FILTER (WHERE b.method = 'llm'), 0)::int AS net_impact,
+       count(*) FILTER (WHERE b.depth = 'full')::int AS full_analyses,
+       count(*) FILTER (WHERE b.has_bank_view)::int AS with_bank_view
+FROM articles a
+LEFT JOIN LATERAL (
+  SELECT x.method, x.depth, x.relevance_score, x.importance_level, x.impact_type,
+         (x.depth = 'full' AND jsonb_array_length(coalesce(x.result->'insight'->'bank_view', '[]'::jsonb)) > 0) AS has_bank_view
+  FROM personal_analyses x
+  WHERE x.article_id = a.id AND x.user_id = $3
+  ORDER BY (x.depth = 'full') DESC, (x.method = 'llm') DESC
+  LIMIT 1
+) b ON true
+WHERE a.duplicate_of IS NULL AND a.published_at >= $4
+GROUP BY 1
+ORDER BY 1
+`
+
+type UserMonthlyExposureParams struct {
+	Tz       string    `json:"tz"`
+	MinScore int32     `json:"min_score"`
+	UserID   uuid.UUID `json:"user_id"`
+	Since    time.Time `json:"since"`
+}
+
+type UserMonthlyExposureRow struct {
+	Month         string `json:"month"`
+	Total         int32  `json:"total"`
+	Relevant      int32  `json:"relevant"`
+	Critical      int32  `json:"critical"`
+	High          int32  `json:"high"`
+	Medium        int32  `json:"medium"`
+	Low           int32  `json:"low"`
+	AvgRelevance  int32  `json:"avg_relevance"`
+	LlmRated      int32  `json:"llm_rated"`
+	Risks         int32  `json:"risks"`
+	Opportunities int32  `json:"opportunities"`
+	Mixed         int32  `json:"mixed"`
+	NetImpact     int32  `json:"net_impact"`
+	FullAnalyses  int32  `json:"full_analyses"`
+	WithBankView  int32  `json:"with_bank_view"`
+}
+
+// Помесячный срез: как новости отражаются на компании пользователя.
+// Для каждой новости берётся лучшая оценка: полный анализ важнее краткого, модель — правил.
+func (q *Queries) UserMonthlyExposure(ctx context.Context, arg UserMonthlyExposureParams) ([]UserMonthlyExposureRow, error) {
+	rows, err := q.db.Query(ctx, userMonthlyExposure,
+		arg.Tz,
+		arg.MinScore,
+		arg.UserID,
+		arg.Since,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserMonthlyExposureRow{}
+	for rows.Next() {
+		var i UserMonthlyExposureRow
+		if err := rows.Scan(
+			&i.Month,
+			&i.Total,
+			&i.Relevant,
+			&i.Critical,
+			&i.High,
+			&i.Medium,
+			&i.Low,
+			&i.AvgRelevance,
+			&i.LlmRated,
+			&i.Risks,
+			&i.Opportunities,
+			&i.Mixed,
+			&i.NetImpact,
+			&i.FullAnalyses,
+			&i.WithBankView,
+		); err != nil {
 			return nil, err
 		}
 		items = append(items, i)

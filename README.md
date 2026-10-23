@@ -1,1 +1,135 @@
-# alfa-hacaton
+# AlfaInsight
+
+Персональная новостная аналитика для руководителей крупного бизнеса — прототип для хакатона Альфа-Банка.
+Одна и та же новость объясняется по-разному в зависимости от компании пользователя и его роли
+(финансовый директор, руководитель закупок и т. д.). Факты, позиция Альфа-Банка и выводы модели
+показываются раздельно, у каждого вывода — ссылки на источники. Материалы не являются инвестиционной рекомендацией.
+
+**Стек:** Next.js 16 + TypeScript, Tailwind CSS 4, Radix/shadcn-подход, Motion, Recharts · Go 1.24 + chi,
+PostgreSQL 16 (pgvector) + pgx + sqlc, миграции goose · JWT в HttpOnly-cookie · OpenAPI (`backend/api/openapi.yaml`) · Docker Compose.
+
+## Быстрый запуск через Docker
+
+Нужен только [Docker Desktop](https://www.docker.com/products/docker-desktop/) (Go и Node.js не нужны).
+
+### 1. Файл `.env`
+
+```bash
+cp .env.example .env
+```
+
+Заполните в `.env`:
+
+| Переменная | Что указать |
+|---|---|
+| `JWT_SECRET` | случайная строка от 32 символов: `openssl rand -base64 48` |
+| `LLM_API_KEY` | ключ API от организаторов (хранится только в `.env`, в Git не попадает) |
+| `POSTGRES_PASSWORD` | пароль базы в контейнере (по умолчанию `alfa`; если меняете — поменяйте и в `DATABASE_URL`) |
+
+Строку `DATABASE_URL` в Docker задавать не нужно — compose собирает её сам.
+Без `LLM_API_KEY` сайт тоже работает: лента, фильтры и оценки «без ИИ» доступны, персональный анализ — нет.
+
+### 2. Данные кейса
+
+Положите CSV-файлы кейса в `data/raw/`:
+
+```
+data/raw/df_Uid_data_hack.csv
+data/raw/df_Uid_payment_hack.csv
+data/raw/df_Fid_Uid_link_hack.csv
+```
+
+Тексты аналитики Альфа-Банка уже лежат в `data/research/`.
+
+### 3. Запуск
+
+```bash
+docker compose up -d --build
+```
+
+Первая сборка занимает 3–7 минут. Проверить состояние: `docker compose ps` — у `api` и `web` должно быть `healthy`/`running`.
+
+### 4. Загрузка данных (один раз)
+
+```bash
+docker compose --profile import run --rm importer
+```
+
+Загружает компании, связи, платежи, аналитику банка и один раз опрашивает RSS-ленты.
+Занимает 2–5 минут. **К языковой модели не обращается.** Повторный запуск безопасен (данные обновляются, а не дублируются).
+
+### 5. Открыть сайт
+
+http://localhost:3000 → «Регистрация» → мастер из трёх шагов (роль, компания, проверка данных).
+
+## Повседневные команды
+
+| Действие | Команда |
+|---|---|
+| Остановить | `docker compose stop` |
+| Запустить снова | `docker compose start` |
+| Пересобрать после изменений кода | `docker compose up -d --build` |
+| Логи backend | `docker compose logs -f api` |
+| Проверить модель **одним** запросом | `docker compose run --rm api llmcheck -test` |
+| Подключиться к базе | `psql postgres://alfa:alfa@localhost:5433/alfainsight` |
+| Удалить всё вместе с базой | `docker compose down -v` (данные придётся загрузить заново) |
+
+База в Docker опубликована на порту **5433**, чтобы не конфликтовать с локальным PostgreSQL на 5432.
+Порты 3000 и 8080 должны быть свободны: перед запуском остановите `pnpm dev` и `go run ./cmd/api`, если они запущены.
+
+## Расход API модели
+
+Дневной лимит ключа — 500 ₽ на всю команду, поэтому:
+
+- фоновых запросов к модели нет — модель вызывается только по кнопкам «Запустить анализ» (4–5 запросов)
+  и «Оценить ленту моделью» (1 запрос на до 8 новостей);
+- результаты кешируются, одинаковые запросы не повторяются;
+- действуют лимиты `LLM_DAILY_CALL_LIMIT`, `LLM_DAILY_TOKEN_BUDGET`, `LLM_PER_MINUTE_LIMIT`, `ANALYZE_PER_USER_HOURLY`;
+  после ответа 429 запросы приостанавливаются;
+- разрешены только модели из списка организаторов, проверка — `llmcheck`.
+
+Резервный адрес API (`LLM_BASE_URL_FALLBACK`) не используется автоматически: при недоступности основного
+адреса нужно вручную заменить `LLM_BASE_URL` в `.env` и выполнить `docker compose up -d api`.
+
+## Запуск без Docker (для разработки)
+
+```bash
+# база: любой PostgreSQL 16, например контейнер из compose
+docker compose up -d db
+set -a; . ./.env; set +a      # DATABASE_URL из .env указывает на localhost:5433
+
+cd backend
+go run ./cmd/importer -news   # один раз
+go run ./cmd/api              # http://localhost:8080
+
+cd ../frontend
+pnpm install
+pnpm dev                      # http://localhost:3000
+```
+
+Тесты: `cd backend && go test ./...` (интеграционные — с `TEST_DATABASE_URL`), `cd frontend && pnpm build`.
+
+## Структура
+
+```
+backend/
+  cmd/api          HTTP-сервер (миграции применяются при старте)
+  cmd/importer     загрузка CSV, аналитики и RSS
+  cmd/llmcheck     проверка подключения к модели
+  internal/        auth, users, companies, news, analysis (агент), llm (клиент, лимиты, кеш), analytics…
+  internal/integrations/alfabusiness   контракт будущего входа из Альфа-Бизнеса
+  migrations/      goose
+  queries/         SQL для sqlc
+  api/openapi.yaml
+frontend/src/
+  app/             страницы (App Router)
+  features/        лента, анализ, аналитика, личный кабинет, онбординг…
+  components/      оболочка и UI-компоненты
+data/research/     тексты материалов аналитиков Альфа-Банка
+```
+
+## Безопасность
+
+- Ключ модели только в `.env` и только в контейнере `api`; во frontend, логи и Git не попадает.
+- Пароли хранятся как хеш argon2id, сессия — JWT в HttpOnly-cookie, проверка Origin для изменяющих запросов.
+- Данные компаний кейса обезличены; исходные значения банка пользователь изменить не может.

@@ -86,3 +86,6 @@ SELECT c.id, c.display_name, c.okved_code, c.okved_name, c.region, c.revenue, m.
 FROM memberships m JOIN companies c ON c.id = m.company_id
 WHERE m.user_id = @user_id
 ORDER BY m.is_primary DESC, m.created_at;
+
+-- name: UpdateUserAvatar :exec
+UPDATE users SET avatar = sqlc.narg('avatar'), updated_at = now() WHERE id = @id;

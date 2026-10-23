@@ -47,10 +47,11 @@ func RequireMember(w http.ResponseWriter, r *http.Request, q *dbq.Queries, log *
 
 func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	params := dbq.SearchCompaniesParams{
-		Q:      httpx.QueryStr(r, "q"),
-		Region: httpx.QueryStr(r, "region"),
-		Lim:    int32(httpx.QueryInt(r, "limit", 20, 1, 50)),
-		Off:    int32(httpx.QueryInt(r, "offset", 0, 0, 100000)),
+		Q:           httpx.QueryStr(r, "q"),
+		Region:      httpx.QueryStr(r, "region"),
+		Lim:         int32(httpx.QueryInt(r, "limit", 20, 1, 50)),
+		ClientsOnly: r.URL.Query().Get("clients_only") == "true",
+		Off:         int32(httpx.QueryInt(r, "offset", 0, 0, 100000)),
 	}
 	if v := httpx.QueryStr(r, "min_revenue"); v != nil {
 		if f, err := strconv.ParseFloat(*v, 64); err == nil && f >= 0 {
@@ -64,10 +65,15 @@ func (h *Handler) search(w http.ResponseWriter, r *http.Request) {
 	}
 	items := make([]map[string]any, 0, len(rows))
 	for _, c := range rows {
-		seg, large := sizeSegment(c.Revenue)
+		segRev := c.GroupRevenue
+		if segRev == nil {
+			segRev = c.Revenue
+		}
+		seg, large := sizeSegment(segRev)
 		items = append(items, map[string]any{
 			"id": c.ID, "display_name": c.DisplayName, "okved_code": c.OkvedCode, "okved_name": c.OkvedName,
-			"region": c.Region, "city": c.City, "revenue": c.Revenue, "size_segment": seg, "is_large": large,
+			"region": c.Region, "city": c.City, "revenue": c.Revenue, "group_revenue": c.GroupRevenue, "group_size": c.GroupSize,
+			"size_segment": seg, "is_large": large,
 			"client_type": c.ClientType, "eco_stage": c.EcoStage, "workers_fns": c.WorkersFns,
 			"section": SectionOf(c.OkvedCode),
 		})
@@ -121,29 +127,48 @@ type UpdateReq struct {
 	Profile     UserProfile `json:"profile"`
 }
 
+// ValidateUpdate проверяет сведения о компании от пользователя. Обязательны
+// название, продукты, рынки и поставщики; приоритеты, описание, заметки и
+// сведения из кабинета Альфа-Бизнеса — необязательные.
 func ValidateUpdate(req *UpdateReq) map[string]string {
 	errs := map[string]string{}
 	req.DisplayName = strings.TrimSpace(req.DisplayName)
+	pr := &req.Profile
+	pr.Description, pr.Products = strings.TrimSpace(pr.Description), strings.TrimSpace(pr.Products)
+	pr.Markets, pr.Suppliers, pr.Notes = strings.TrimSpace(pr.Markets), strings.TrimSpace(pr.Suppliers), strings.TrimSpace(pr.Notes)
+	required := map[string]string{"display_name": req.DisplayName, "products": pr.Products, "markets": pr.Markets, "suppliers": pr.Suppliers}
+	for k, v := range required {
+		if v == "" {
+			errs[k] = "Обязательное поле"
+		}
+	}
 	if n := utf8.RuneCountInString(req.DisplayName); n > 200 {
 		errs["display_name"] = "Название не длиннее 200 символов"
 	}
-	for k, v := range map[string]string{"description": req.Profile.Description, "products": req.Profile.Products,
-		"markets": req.Profile.Markets, "suppliers": req.Profile.Suppliers, "notes": req.Profile.Notes} {
+	for k, v := range map[string]string{"description": pr.Description, "products": pr.Products,
+		"markets": pr.Markets, "suppliers": pr.Suppliers, "notes": pr.Notes} {
 		if utf8.RuneCountInString(v) > 2000 {
 			errs[k] = "Не более 2000 символов"
 		}
 	}
-	if len(req.Profile.Priorities) > 10 {
+	if len(pr.Priorities) > 10 {
 		errs["priorities"] = "Не более 10 приоритетов"
 	}
-	clean := req.Profile.Priorities[:0]
-	for _, p := range req.Profile.Priorities {
+	clean := []string{}
+	for _, p := range pr.Priorities {
 		p = strings.TrimSpace(p)
 		if p != "" && utf8.RuneCountInString(p) <= 200 {
 			clean = append(clean, p)
 		}
 	}
-	req.Profile.Priorities = clean
+	pr.Priorities = clean
+	if pr.Business != nil {
+		// Через API пользователь всегда вводит сведения сам; источник
+		// "alfa_business" выставляет только интеграция с банком.
+		for k, v := range ValidateBusiness(pr.Business, "user") {
+			errs[k] = v
+		}
+	}
 	return errs
 }
 

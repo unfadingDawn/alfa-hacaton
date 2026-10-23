@@ -2,7 +2,7 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { Bookmark, BookmarkCheck, ExternalLink, Sparkles } from "lucide-react";
+import { Bookmark, BookmarkCheck, ExternalLink, Share2, Sparkles } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/misc";
@@ -104,6 +104,38 @@ export function SaveButton({ id, saved, onChange }: { id: string; saved: boolean
   );
 }
 
+// «Поделиться новостью» с коллегой: системное меню «Поделиться», а если его
+// нет (например, в десктопном Chrome) — копирование ссылки в буфер обмена.
+export function ShareButton({ id, title, url, withLabel }: { id: string; title: string; url?: string; withLabel?: boolean }) {
+  async function share() {
+    const link = `${window.location.origin}/news/${id}`;
+    const text = url && url.startsWith("http") ? `${title}\nИсточник: ${url}` : title;
+    if (navigator.share) {
+      try {
+        await navigator.share({ title, text, url: link });
+        return;
+      } catch (e) {
+        if ((e as Error).name === "AbortError") return;
+      }
+    }
+    try {
+      await navigator.clipboard.writeText(`${text}\n${link}`);
+      toast.success("Ссылка скопирована", { description: "Отправьте её коллеге — после входа он увидит анализ для своей роли." });
+    } catch {
+      toast.error("Не удалось скопировать ссылку");
+    }
+  }
+  return withLabel ? (
+    <Button variant="outline" size="sm" onClick={share}>
+      <Share2 /> Поделиться
+    </Button>
+  ) : (
+    <Button variant="ghost" size="icon" onClick={share} aria-label="Поделиться новостью">
+      <Share2 />
+    </Button>
+  );
+}
+
 export function WhyItMatters({ a }: { a: AnalysisRef }) {
   return (
     <div className={cn("rounded-[12px] px-3.5 py-2.5 text-[14px] leading-relaxed", a.method === "llm" ? "bg-bankview-bg/70 text-ink" : "bg-frost/70 text-ink-soft")}>
@@ -145,6 +177,7 @@ export function NewsCard({ item, onSavedChange }: { item: FeedItem; onSavedChang
               ))}
             </div>
             <div className="flex items-center gap-1">
+              <ShareButton id={item.id} title={item.title} url={item.url} />
               <SaveButton id={item.id} saved={item.is_saved} onChange={onSavedChange} />
               <Button asChild variant="outline" size="sm">
                 <Link href={`/news/${item.id}`}>{a?.depth === "full" ? "Открыть анализ" : "Подробнее"}</Link>

@@ -92,7 +92,7 @@ func (q *Queries) CreateSession(ctx context.Context, arg CreateSessionParams) (S
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (email, password_hash, full_name)
 VALUES ($1, $2, $3)
-RETURNING id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at
+RETURNING id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at, avatar
 `
 
 type CreateUserParams struct {
@@ -116,6 +116,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (User, e
 		&i.OnboardingCompleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Avatar,
 	)
 	return i, err
 }
@@ -164,7 +165,7 @@ func (q *Queries) GetPrimaryCompanyID(ctx context.Context, userID uuid.UUID) (st
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at FROM users WHERE lower(email) = lower($1)
+SELECT id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at, avatar FROM users WHERE lower(email) = lower($1)
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -182,12 +183,13 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.OnboardingCompleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Avatar,
 	)
 	return i, err
 }
 
 const getUserByID = `-- name: GetUserByID :one
-SELECT id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at FROM users WHERE id = $1
+SELECT id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at, avatar FROM users WHERE id = $1
 `
 
 func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
@@ -205,6 +207,7 @@ func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (User, error) {
 		&i.OnboardingCompleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Avatar,
 	)
 	return i, err
 }
@@ -375,10 +378,24 @@ func (q *Queries) SetOnboardingCompleted(ctx context.Context, arg SetOnboardingC
 	return err
 }
 
+const updateUserAvatar = `-- name: UpdateUserAvatar :exec
+UPDATE users SET avatar = $1, updated_at = now() WHERE id = $2
+`
+
+type UpdateUserAvatarParams struct {
+	Avatar *string   `json:"avatar"`
+	ID     uuid.UUID `json:"id"`
+}
+
+func (q *Queries) UpdateUserAvatar(ctx context.Context, arg UpdateUserAvatarParams) error {
+	_, err := q.db.Exec(ctx, updateUserAvatar, arg.Avatar, arg.ID)
+	return err
+}
+
 const updateUserPersonalization = `-- name: UpdateUserPersonalization :one
 UPDATE users SET personalization = $1, updated_at = now()
 WHERE id = $2
-RETURNING id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at
+RETURNING id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at, avatar
 `
 
 type UpdateUserPersonalizationParams struct {
@@ -401,6 +418,7 @@ func (q *Queries) UpdateUserPersonalization(ctx context.Context, arg UpdateUserP
 		&i.OnboardingCompleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Avatar,
 	)
 	return i, err
 }
@@ -413,7 +431,7 @@ SET full_name = $1,
     work_focus = $4,
     updated_at = now()
 WHERE id = $5
-RETURNING id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at
+RETURNING id, email, password_hash, full_name, role_code, position_title, work_focus, personalization, onboarding_completed, created_at, updated_at, avatar
 `
 
 type UpdateUserProfileParams struct {
@@ -445,6 +463,7 @@ func (q *Queries) UpdateUserProfile(ctx context.Context, arg UpdateUserProfilePa
 		&i.OnboardingCompleted,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.Avatar,
 	)
 	return i, err
 }

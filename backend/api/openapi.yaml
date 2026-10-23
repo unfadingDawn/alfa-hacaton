@@ -81,6 +81,25 @@ paths:
       summary: Выход (отзыв refresh-токена и очистка cookie)
       responses:
         '200': {description: OK}
+  /auth/alfa-business:
+    get:
+      tags: [auth]
+      security: []
+      summary: Точка входа из интернет-банка «Альфа-Бизнес» (контракт; интеграция ещё не подключена)
+      responses:
+        '200': {description: '{"connected": false, "message": "..."}'}
+  /me/avatar:
+    put:
+      tags: [profile]
+      summary: Фото профиля (data URL JPEG/PNG/WebP, до ~300 КБ)
+      requestBody:
+        required: true
+        content: {application/json: {schema: {type: object, required: [data_url], properties: {data_url: {type: string}}}}}
+      responses: {'200': {description: OK}, '422': {$ref: '#/components/responses/Validation'}}
+    delete:
+      tags: [profile]
+      summary: Удалить фото профиля
+      responses: {'200': {description: OK}}
   /me:
     get:
       tags: [profile]
@@ -346,7 +365,22 @@ paths:
     get:
       tags: [analytics]
       summary: Сводные показатели по реальным данным
-      parameters: [{name: period, in: query, schema: {type: string, enum: [7d, 30d, 90d]}}]
+      description: |
+        Помимо распределений по темам и дням возвращает помесячный срез влияния новостей на компанию
+        (monthly: значимые новости по важности, риски/возможности по оценкам модели, net_impact —
+        взвешенная по важности сумма «+1 возможность / −1 риск»), каналы влияния (channels) и KPI периода (kpi).
+        Новость «касается компании», если её оценка не ниже min_score.
+      parameters: [{name: period, in: query, schema: {type: string, enum: [7d, 30d, 90d, 180d, 365d], default: 365d}}]
+      responses: {'200': {description: OK}}
+  /public/showcase:
+    get:
+      tags: [analytics]
+      security: []
+      summary: Реальный пример работы сервиса для лендинга
+      description: |
+        Последний разбор новости моделью (по возможности — для нескольких ролей) и свежие поступления
+        из источников. К модели не обращается; имена пользователей и названия компаний не раскрываются.
+        Если модель ещё ничего не разбирала, example = null.
       responses: {'200': {description: OK}}
   /system/status:
     get: {tags: [analytics], summary: Статус интеграций, лимитов модели и импорта данных, responses: {'200': {description: OK}}}
@@ -395,6 +429,7 @@ components:
         companies: {type: array, items: {type: object}}
     UserCompanyProfile:
       type: object
+      description: Обязательны products, markets, suppliers (и display_name в запросе); остальное — по желанию.
       properties:
         description: {type: string}
         products: {type: string}
@@ -402,6 +437,33 @@ components:
         suppliers: {type: string}
         priorities: {type: array, items: {type: string}}
         notes: {type: string}
+        business: {$ref: '#/components/schemas/BusinessProfile'}
+    BusinessProfile:
+      type: object
+      description: Сведения с главного экрана личного кабинета «Альфа-Бизнес». Все поля необязательные; source выставляет сервер.
+      properties:
+        source: {type: string, enum: [user, alfa_business], readOnly: true}
+        legal_name: {type: string}
+        manager_name: {type: string}
+        companies_in_account: {type: integer}
+        accounts_rub: {type: integer}
+        accounts_fx: {type: integer}
+        currencies: {type: array, items: {type: string, example: CNY}}
+        balance_rub: {type: number}
+        overdraft_available: {type: boolean}
+        balance_with_overdraft_rub: {type: number}
+        business_cards: {type: boolean}
+        tariff: {type: string}
+        risk_indicator: {type: string, enum: [low, medium, high]}
+        gov_procurement: {type: boolean}
+        applications:
+          type: array
+          items:
+            type: object
+            properties:
+              product: {type: string, enum: [leasing, factoring, credit, guarantee, deposit, rko, cards, other]}
+              amount: {type: number}
+              status: {type: string}
     Fact:
       type: object
       properties:

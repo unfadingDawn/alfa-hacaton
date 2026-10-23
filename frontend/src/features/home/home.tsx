@@ -1,10 +1,12 @@
 "use client";
 
 import Link from "next/link";
-import { useMe, PageHeader } from "@/components/app-shell";
+import { Bookmark, FileText, Newspaper } from "lucide-react";
+import { useMe } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
 import { Badge, EmptyState, ErrorState, Panel, Skeleton } from "@/components/ui/misc";
-import { formatDate } from "@/lib/format";
+import { formatDate, pluralize } from "@/lib/format";
+import { cn } from "@/lib/utils";
 import type { Dashboard, FeedItem } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { MethodTag, RelevanceMeter, SourceLine } from "@/features/news/parts";
@@ -24,16 +26,41 @@ export function HomeView() {
 
   return (
     <div>
-      <PageHeader title={`${greeting()}, ${firstName}`} lead={data?.day_summary.text ?? "Собираем сводку дня…"} />
+      <div className="mb-6 flex flex-wrap items-center justify-between gap-3">
+        <h1 className="display text-[28px] sm:text-[34px]">
+          {greeting()}, {firstName}
+        </h1>
+        <div className="flex flex-wrap gap-2">
+          <Button asChild variant="secondary" size="md">
+            <Link href="/feed">
+              <Newspaper /> Лента
+            </Link>
+          </Button>
+          <Button asChild variant="secondary" size="md">
+            <Link href="/feed?source_kind=alfa_research">
+              <FileText /> Аналитика банка
+            </Link>
+          </Button>
+          <Button asChild variant="secondary" size="md">
+            <Link href="/saved">
+              <Bookmark /> Сохранённые
+            </Link>
+          </Button>
+        </div>
+      </div>
       {error ? (
         <ErrorState error={error} onRetry={reload} />
       ) : loading || !data ? (
-        <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
-          <Skeleton className="h-[420px]" />
-          <Skeleton className="h-[420px]" />
+        <div className="space-y-6">
+          <Skeleton className="h-[300px] rounded-[var(--radius-xl)]" />
+          <div className="grid gap-6 lg:grid-cols-[1.5fr_1fr]">
+            <Skeleton className="h-[420px]" />
+            <Skeleton className="h-[420px]" />
+          </div>
         </div>
       ) : (
         <div className="space-y-6">
+          <DayHero data={data} />
           {!data.llm.configured && (
             <div className="rounded-[var(--radius-lg)] border border-mixed/20 bg-mixed-bg px-5 py-4 text-[14px] text-mixed">
               Языковая модель не подключена: в ленте работают только предварительные оценки без ИИ, персональный анализ недоступен.
@@ -109,6 +136,66 @@ export function HomeView() {
         </div>
       )}
     </div>
+  );
+}
+
+// Главный блок, как в кабинете Альфа-Бизнеса: тёмное стекло с красным свечением.
+function DayHero({ data }: { data: Dashboard }) {
+  const st = data.day_summary.stats;
+  const latest = data.market.bank_research[0];
+  const rows = [
+    { label: "Высокая важность для вас", value: st.high_importance, href: "/feed?min_importance=high", accent: true },
+    { label: "Из них оценено моделью", value: st.high_importance_llm, href: "/feed?min_importance=high" },
+    { label: "Риски из анализов", value: data.risks.length, href: "/analytics", accent: data.risks.length > 0 },
+    { label: "Возможности из анализов", value: data.opportunities.length, href: "/analytics" },
+    { label: "Полных ИИ-анализов сегодня", value: st.full_analyses, href: "/feed" },
+  ];
+  return (
+    <section className="glass-night grid gap-4 rounded-[var(--radius-xl)] p-4 sm:p-5 lg:grid-cols-[1.35fr_1fr_1fr]" aria-label="Сводка дня">
+      <div className="glass-night-card flex flex-col rounded-[20px] p-5">
+        <p className="text-[13px] text-white/60">Сводка дня</p>
+        <p className="mt-1 text-[44px] font-semibold leading-none tracking-[-0.03em] tabular sm:text-[56px]">{st.new_articles}</p>
+        <p className="mt-2 text-[15px] text-white/75">{pluralize(st.new_articles, "новость", "новости", "новостей")} из подключённых источников</p>
+        <p className="mt-auto pt-6 text-[13px] leading-relaxed text-white/60">{data.day_summary.text}</p>
+      </div>
+      <div className="glass-night-card rounded-[20px] p-5">
+        <p className="text-[15px] font-medium">Важное сегодня</p>
+        <ul className="mt-3 space-y-2.5">
+          {rows.map((r) => (
+            <li key={r.label}>
+              <Link href={r.href} className="flex items-center justify-between gap-3 text-[14px] text-white/85 hover:text-white">
+                {r.label}
+                <span
+                  className={cn(
+                    "min-w-6 rounded-full px-2 py-0.5 text-center text-[12px] font-semibold tabular",
+                    r.accent && r.value > 0 ? "bg-steel text-white" : "bg-white/10 text-white/70",
+                  )}
+                >
+                  {r.value}
+                </span>
+              </Link>
+            </li>
+          ))}
+        </ul>
+      </div>
+      <div className="glass-night-card flex flex-col rounded-[20px] p-5">
+        <p className="text-[15px] font-medium">Позиция Альфа-Банка</p>
+        {latest ? (
+          <>
+            <Link href={`/news/${latest.id}`} className="mt-3 text-[15px] leading-snug text-white hover:underline">
+              {latest.title}
+            </Link>
+            <p className="mt-1 text-[12px] text-white/55">{formatDate(latest.published_at)}</p>
+            <p className="mt-3 line-clamp-4 text-[13px] leading-relaxed text-white/65">{latest.summary}</p>
+          </>
+        ) : (
+          <p className="mt-3 text-[13px] text-white/60">Материалы аналитиков не загружены.</p>
+        )}
+        <Link href="/feed?source_kind=alfa_research" className="mt-auto pt-4 text-[13px] font-medium text-[#ff8a80] hover:underline">
+          Вся аналитика банка
+        </Link>
+      </div>
+    </section>
   );
 }
 

@@ -138,6 +138,11 @@ func (l *Loader) Companies(ctx context.Context, path string) (Report, error) {
 			issues = append(issues, issue{group[1].Row, "duplicate_id_identical", map[string]any{"id": id, "copies": len(group)}})
 		}
 		c := group[0]
+		// REVENUE_COMPANY = 1000 — техническая заглушка обезличивания (ответ организаторов): храним как NULL.
+		if c.Revenue != nil && *c.Revenue == 1000 {
+			c.Revenue = nil
+			rep.Issues["revenue_stub_1000"]++
+		}
 		rows = append(rows, []any{c.ID, c.OrgType, c.OkfsName, c.Age, c.EcoStage, c.OkvedCode, c.OkvedName, c.OkvedDivision,
 			c.Negative, c.WorkersFns, c.WorkersSpark, c.ClientType, c.Rko, c.Gar, c.Loa, c.Lea, c.Dep, c.Zpp, c.Fts,
 			c.Countries, c.Factoring, c.Revenue, c.GroupID, c.City, c.Region, int32(c.Row)})
@@ -170,6 +175,15 @@ func (l *Loader) Companies(ctx context.Context, path string) (Report, error) {
 		return rep, fmt.Errorf("upsert companies: %w", err)
 	}
 	rep.Imported = int(tag.RowsAffected())
+	// Выручка и размер группы компаний — для сегментации крупного бизнеса.
+	if _, err := tx.Exec(ctx, `UPDATE companies c SET group_revenue = g.rev, group_size = g.n
+		FROM (SELECT group_id, sum(revenue) AS rev, count(*)::int AS n FROM companies WHERE group_id IS NOT NULL GROUP BY group_id) g
+		WHERE c.group_id = g.group_id`); err != nil {
+		return rep, fmt.Errorf("group revenue: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `UPDATE companies SET group_revenue = revenue, group_size = 1 WHERE group_id IS NULL`); err != nil {
+		return rep, err
+	}
 	if err := l.writeIssues(ctx, tx, file, issues); err != nil {
 		return rep, err
 	}

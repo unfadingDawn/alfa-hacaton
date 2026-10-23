@@ -40,6 +40,8 @@ type UserProfile struct {
 	Suppliers   string   `json:"suppliers,omitempty"`
 	Priorities  []string `json:"priorities,omitempty"`
 	Notes       string   `json:"notes,omitempty"`
+	// Сведения из личного кабинета Альфа-Бизнеса (введены пользователем или получены интеграцией).
+	Business *BusinessProfile `json:"business,omitempty"`
 }
 
 type Counterparty struct {
@@ -80,23 +82,25 @@ type Relations struct {
 }
 
 type Profile struct {
-	ID          string      `json:"id"`
-	DisplayName string      `json:"display_name"`
-	Section     Section     `json:"section"`
-	OkvedCode   string      `json:"okved_code"`
-	OkvedName   string      `json:"okved_name"`
-	Region      string      `json:"region"`
-	City        string      `json:"city"`
-	Revenue     *float64    `json:"revenue"`
-	SizeSegment string      `json:"size_segment"`
-	IsLarge     bool        `json:"is_large"`
-	Facts       []Fact      `json:"facts"`
-	Exposures   []Exposure  `json:"exposures"`
-	TopicHints  []string    `json:"topic_hints"`
-	Countries   []string    `json:"fts_countries"`
-	User        UserProfile `json:"user_profile"`
-	Relations   *Relations  `json:"relations,omitempty"`
-	DataGaps    []string    `json:"data_gaps"`
+	ID           string      `json:"id"`
+	DisplayName  string      `json:"display_name"`
+	Section      Section     `json:"section"`
+	OkvedCode    string      `json:"okved_code"`
+	OkvedName    string      `json:"okved_name"`
+	Region       string      `json:"region"`
+	City         string      `json:"city"`
+	Revenue      *float64    `json:"revenue"`
+	GroupRevenue *float64    `json:"group_revenue"`
+	GroupSize    int32       `json:"group_size"`
+	SizeSegment  string      `json:"size_segment"`
+	IsLarge      bool        `json:"is_large"`
+	Facts        []Fact      `json:"facts"`
+	Exposures    []Exposure  `json:"exposures"`
+	TopicHints   []string    `json:"topic_hints"`
+	Countries    []string    `json:"fts_countries"`
+	User         UserProfile `json:"user_profile"`
+	Relations    *Relations  `json:"relations,omitempty"`
+	DataGaps     []string    `json:"data_gaps"`
 }
 
 func s(p *string) string {
@@ -119,9 +123,11 @@ func flag(p *bool) string {
 
 func isTrue(p *bool) bool { return p != nil && *p }
 
+// Значения CL_TYPE расшифрованы организаторами на вебинаре.
 var clientTypeLabels = map[string]string{
-	"CLIENT":   "действующий клиент",
-	"PROSPECT": "потенциальный клиент",
+	"CLIENT":       "действующий клиент",
+	"PROSPECT":     "потенциальный клиент",
+	"CLOSE_CLIENT": "бывший клиент (закрыл счёт, нет доступа к интернет-банку)",
 }
 
 // FormatRub форматирует сумму в рублях в «млн/млрд руб.».
@@ -142,7 +148,7 @@ func sizeSegment(rev *float64) (string, bool) {
 	}
 	switch {
 	case *rev >= LargeBusinessRevenue:
-		return "крупный бизнес (выручка от 15 млрд руб.)", true
+		return "крупный бизнес (выручка группы от 15 млрд руб.)", true
 	case *rev >= 2e9:
 		return "средний и крупный-средний бизнес (2–15 млрд руб.)", false
 	case *rev >= 800e6:
@@ -155,11 +161,20 @@ func sizeSegment(rev *float64) (string, bool) {
 // Build собирает профиль компании из исходных полей. Каждый вывод
 // сопровождается ссылкой на поле CSV, из которого он получен.
 func Build(c dbq.Company) Profile {
-	seg, large := sizeSegment(c.Revenue)
+	// Сегмент определяется по выручке группы компаний (ответ организаторов на вебинаре).
+	segRev := c.GroupRevenue
+	if segRev == nil {
+		segRev = c.Revenue
+	}
+	seg, large := sizeSegment(segRev)
+	var gsize int32
+	if c.GroupSize != nil {
+		gsize = *c.GroupSize
+	}
 	p := Profile{
 		ID: c.ID, DisplayName: s(c.DisplayName), Section: SectionOf(c.OkvedCode),
 		OkvedCode: c.OkvedCode, OkvedName: c.OkvedName, Region: s(c.Region), City: s(c.City),
-		Revenue: c.Revenue, SizeSegment: seg, IsLarge: large, Countries: c.FtsCountries,
+		Revenue: c.Revenue, GroupRevenue: c.GroupRevenue, GroupSize: gsize, SizeSegment: seg, IsLarge: large, Countries: c.FtsCountries,
 		TopicHints: TopicHints(c.OkvedCode), Facts: []Fact{}, Exposures: []Exposure{}, DataGaps: []string{},
 	}
 	if len(c.Profile) > 0 {
@@ -171,9 +186,15 @@ func Build(c dbq.Company) Profile {
 	add("okved", "Основной вид деятельности (ОКВЭД)", c.OkvedCode+" — "+c.OkvedName, "MAINOKVED_CODE, MAINOKVED_NAME")
 	add("section", "Раздел ОКВЭД", p.Section.Letter+" — "+p.Section.Name, "MAINOKVED_CODE (производное)")
 	if c.Revenue != nil {
-		add("revenue", "Годовая выручка", FormatRub(*c.Revenue)+" ("+seg+")", "REVENUE_COMPANY")
+		add("revenue", "Выручка компании за 2025 год", FormatRub(*c.Revenue), "REVENUE_COMPANY")
 	} else {
-		p.DataGaps = append(p.DataGaps, "Нет данных о выручке")
+		p.DataGaps = append(p.DataGaps, "Нет данных о выручке (или указано техническое значение)")
+	}
+	if c.GroupRevenue != nil && gsize > 1 {
+		add("group_revenue", "Выручка группы компаний", fmt.Sprintf("%s, компаний в группе: %d (%s)", FormatRub(*c.GroupRevenue), gsize, seg),
+			"REVENUE_COMPANY по GROUP_ID (производное)")
+	} else if c.Revenue != nil {
+		add("segment", "Сегмент", seg, "REVENUE_COMPANY (производное)")
 	}
 	if c.Region != nil {
 		add("region", "Регион регистрации", s(c.Region)+", "+s(c.City), "REGION, CITY")
@@ -219,7 +240,7 @@ func Build(c dbq.Company) Profile {
 		add("fts_countries", "Страны в данных ФТС", strings.Join(c.FtsCountries, ", "), "FTS_COUNTRY_NAME")
 	}
 	if c.NegativeMark != nil {
-		add("negative_mark", "Признак ключевого собственника (NEGATIVEMARK)", flag(c.NegativeMark), "NEGATIVEMARK")
+		add("negative_mark", "У банка есть достоверные сведения о ключевом собственнике", flag(c.NegativeMark), "NEGATIVEMARK")
 	}
 	if c.GroupID != nil {
 		add("group", "Идентификатор группы компаний", s(c.GroupID), "GROUP_ID")
@@ -266,6 +287,7 @@ func Build(c dbq.Company) Profile {
 		}
 		p.Exposures = append(p.Exposures, ex)
 	}
+	p.addBusiness(p.User.Business)
 	if strings.TrimSpace(p.User.Description) == "" && strings.TrimSpace(p.User.Products) == "" {
 		p.DataGaps = append(p.DataGaps, "Нет описания продуктов и рынков компании (можно добавить в профиле)")
 	}

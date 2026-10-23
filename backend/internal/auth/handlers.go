@@ -26,6 +26,12 @@ type Handler struct {
 	CookieSecure bool
 	Log          *slog.Logger
 	Limiter      *RateLimiter
+	AlfaBusiness ExternalLogin
+}
+
+// ExternalLogin — вход через внешнюю систему (Альфа-Бизнес), см. internal/integrations/alfabusiness.
+type ExternalLogin interface {
+	Connected() bool
 }
 
 func (h *Handler) Routes(r chi.Router) {
@@ -33,6 +39,18 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Post("/auth/login", h.login)
 	r.Post("/auth/logout", h.logout)
 	r.Post("/auth/refresh", h.refresh)
+	r.Get("/auth/alfa-business", h.alfaBusiness)
+}
+
+// alfaBusiness — точка входа из интернет-банка. Пока интеграции нет,
+// честно сообщает об этом (контракт: internal/integrations/alfabusiness).
+func (h *Handler) alfaBusiness(w http.ResponseWriter, r *http.Request) {
+	if h.AlfaBusiness == nil || !h.AlfaBusiness.Connected() {
+		httpx.JSON(w, http.StatusOK, map[string]any{"connected": false,
+			"message": "Вход из Альфа-Бизнеса появится после подключения к интернет-банку. Сейчас войдите по email — сведения из личного кабинета можно указать в профиле."})
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"connected": true})
 }
 
 type registerReq struct {

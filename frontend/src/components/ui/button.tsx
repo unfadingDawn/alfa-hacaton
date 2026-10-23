@@ -5,16 +5,17 @@ import { Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const buttonVariants = cva(
-  "inline-flex items-center justify-center gap-2 whitespace-nowrap font-medium transition-colors disabled:pointer-events-none disabled:opacity-55 [&_svg]:size-4 [&_svg]:shrink-0",
+  "inline-flex items-center justify-center gap-2 whitespace-nowrap border border-transparent font-medium transition-[background,box-shadow,color,border-color,transform] duration-200 active:translate-y-px disabled:pointer-events-none disabled:opacity-55 [&_svg]:size-4 [&_svg]:shrink-0",
   {
     variants: {
       variant: {
-        primary: "bg-steel text-white hover:bg-steel-deep shadow-[0_8px_20px_-12px_rgb(43_103_168/0.9)]",
-        secondary: "glass-strong text-ink hover:bg-white",
-        ghost: "text-ink-soft hover:bg-frost hover:text-ink",
-        outline: "border border-line bg-white/60 text-ink hover:border-glacier hover:bg-white",
+        primary: "bg-steel text-white shadow-[0_8px_20px_-12px_rgb(239_49_36/0.7)] hover:-translate-y-px hover:glass-sheen",
+        secondary: "glass-strong text-ink hover:glass-pill",
+        dark: "bg-night text-white shadow-[0_8px_20px_-12px_rgb(0_0_0/0.6)] hover:-translate-y-px hover:bg-black hover:shadow-[inset_0_1px_0_rgb(255_255_255/0.18),0_10px_24px_-10px_rgb(239_49_36/0.6)]",
+        ghost: "text-ink-soft hover:glass-pill-soft hover:text-ink",
+        outline: "border-line bg-white/60 text-ink hover:glass-pill",
         danger: "text-risk hover:bg-risk-bg",
-        link: "text-steel underline-offset-4 hover:underline px-0 h-auto",
+        link: "border-0 text-steel underline-offset-4 hover:underline px-0 h-auto",
       },
       size: {
         sm: "h-8 rounded-[10px] px-3 text-[13px]",

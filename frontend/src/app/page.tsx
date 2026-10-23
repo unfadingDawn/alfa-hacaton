@@ -1,7 +1,10 @@
 import Link from "next/link";
 import { Building2, FileSearch, ShieldCheck, UserRound } from "lucide-react";
-import { Logo } from "@/components/brand";
+import { BRAND_NAME, Logo } from "@/components/brand";
+import { HeroMark, RotatingTagline } from "@/features/landing/hero";
 import { Button } from "@/components/ui/button";
+import { DISCLAIMER } from "@/lib/format";
+import { LiveExample } from "@/features/landing/live-example";
 
 const steps = [
   {
@@ -45,9 +48,8 @@ export default function Landing() {
   return (
     <div className="min-h-dvh">
       <section className="relative overflow-hidden">
-        <div aria-hidden className="absolute inset-0 bg-cover bg-[center_right]" style={{ backgroundImage: "url(/waves.jpg)" }} />
-        <div aria-hidden className="absolute inset-0 bg-gradient-to-r from-ice via-ice/70 to-ice/5" />
-        <div className="relative mx-auto max-w-[1240px] px-4 pb-24 pt-6 sm:px-8 lg:pb-36">
+        <div aria-hidden className="app-backdrop absolute inset-0" />
+        <div className="relative mx-auto max-w-[1240px] px-4 pb-20 pt-6 sm:px-8 lg:pb-28">
           <nav className="flex items-center justify-between">
             <Logo />
             <div className="flex items-center gap-2">
@@ -59,11 +61,10 @@ export default function Landing() {
               </Button>
             </div>
           </nav>
-          <div className="mt-20 max-w-[760px] lg:mt-32">
-            <h1 className="display text-[48px] sm:text-[72px] lg:text-[96px]">AlfaInsight</h1>
-            <p className="mt-6 max-w-[34ch] text-[22px] leading-snug text-ink sm:text-[26px]">
-              Что произошло в экономике — и что это значит именно для вашей компании.
-            </p>
+          <div className="mt-14 grid items-center gap-10 lg:mt-20 lg:grid-cols-[1.1fr_1fr]">
+          <div className="max-w-[760px]">
+            <h1 className="display text-[48px] sm:text-[72px] lg:text-[88px]">{BRAND_NAME}</h1>
+            <RotatingTagline />
             <p className="mt-4 max-w-[52ch] text-[16px] leading-relaxed text-ink-soft">
               Сервис для руководителей крупного бизнеса: отбирает значимые события, объясняет их влияние с учётом вашей роли и
               опирается на аналитику Альфа-Банка.
@@ -76,6 +77,8 @@ export default function Landing() {
                 <Link href="/login">У меня есть аккаунт</Link>
               </Button>
             </div>
+          </div>
+          <HeroMark />
           </div>
         </div>
       </section>
@@ -94,27 +97,15 @@ export default function Landing() {
       </section>
 
       <section className="bg-frost/60">
-        <div className="mx-auto grid max-w-[1240px] gap-10 px-4 py-16 sm:px-8 lg:grid-cols-[1fr_1.2fr] lg:py-24">
+        <div className="mx-auto grid max-w-[1240px] gap-10 px-4 py-16 sm:px-8 lg:grid-cols-[1fr_1.4fr] lg:py-24">
           <div>
             <h2 className="display text-[34px] sm:text-[44px]">Не пересказ, а интерпретация</h2>
             <p className="mt-4 max-w-[46ch] text-[16px] leading-relaxed text-ink-soft">
-              Пример из материалов кейса: компания с кредитными продуктами, новость — сохранение ключевой ставки.
+              Так выглядит работа сервиса прямо сейчас: одна и та же новость, разобранная для разных ролей, и свежие
+              поступления из официальных источников и аналитики Альфа-Банка.
             </p>
           </div>
-          <figure className="glass rounded-[var(--radius-xl)] p-6 sm:p-8">
-            <p className="text-[13px] text-silver">Пересказ</p>
-            <p className="mt-1 text-[15px] leading-relaxed text-ink-soft">
-              «11 сентября 2026 года совет директоров Банка России принял решение сохранить ключевую ставку на уровне 14% годовых.»
-            </p>
-            <div className="my-5 h-px bg-line" />
-            <p className="text-[13px] text-steel">Интерпретация для бизнеса</p>
-            <blockquote className="mt-1 text-[18px] leading-snug text-ink">
-              «Для бизнеса сохранение ключевой ставки на уровне 14% — сигнал о том, что период быстрого удешевления кредитов
-              временно приостановлен. Деньги остаются дорогими, а значит, финансовая нагрузка на компании, зависящие от заёмного
-              финансирования, не снизится в ближайшей перспективе.»
-            </blockquote>
-            <figcaption className="mt-4 text-[12px] text-silver">Источник: презентация кейса хакатона, раздел «Ограничения».</figcaption>
-          </figure>
+          <LiveExample />
         </div>
       </section>
 
@@ -131,7 +122,7 @@ export default function Landing() {
           ))}
         </div>
         <div className="mt-14 flex flex-wrap items-center justify-between gap-4 border-t border-line pt-8">
-          <p className="text-[15px] text-ink-soft">Прототип для хакатона Альфа-Банка. Данные компаний обезличены.</p>
+          <p className="max-w-[60ch] text-[14px] leading-relaxed text-ink-soft">{DISCLAIMER}</p>
           <Button asChild>
             <Link href="/register">Начать</Link>
           </Button>

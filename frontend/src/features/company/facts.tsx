@@ -1,7 +1,7 @@
 import type { Fact } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-const compactIds = ["C:okved", "C:revenue", "C:region", "C:workers", "C:age", "C:eco_stage", "C:client_type", "C:has_loan",
+const compactIds = ["C:okved", "C:revenue", "C:group_revenue", "C:segment", "C:region", "C:workers", "C:age", "C:eco_stage", "C:client_type", "C:has_loan",
   "C:has_leasing", "C:fts", "C:fts_countries"];
 
 // Таблица признаков компании с указанием поля-источника в данных банка.

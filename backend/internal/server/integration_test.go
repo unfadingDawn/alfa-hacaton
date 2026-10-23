@@ -43,7 +43,7 @@ func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Model    string `json:"model"`
+		Model    string                     `json:"model"`
 		Messages []struct{ Content string } `json:"messages"`
 	}
 	_ = json.NewDecoder(r.Body).Decode(&req)
@@ -136,7 +136,12 @@ func (c *client) must(method, path string, body any, want int) map[string]any {
 func onboard(c *client, email, role, company string) {
 	c.must("POST", "/api/auth/register", map[string]any{"email": email, "password": "Demo12345", "full_name": "Тест " + role}, 201)
 	c.must("PUT", "/api/me/profile", map[string]any{"full_name": "Тест " + role, "role_code": role}, 200)
-	c.must("POST", "/api/me/companies", map[string]any{"company_id": company}, 200)
+	// Без обязательных полей компании — ошибка валидации.
+	c.must("POST", "/api/me/companies", map[string]any{"company_id": company}, 422)
+	c.must("POST", "/api/me/companies", map[string]any{"company_id": company, "display_name": "ООО «Тест»",
+		"profile": map[string]any{"products": "напитки", "markets": "розничные сети", "suppliers": "производители",
+			"business": map[string]any{"source": "alfa_business", "currencies": []string{"cny", "RUB"}, "accounts_fx": 1,
+				"overdraft_available": true, "applications": []map[string]any{{"product": "leasing", "amount": 75000, "status": "на подпись"}}}}}, 200)
 	c.must("PUT", "/api/me/interests", map[string]any{"topics": []map[string]any{{"code": "monetary_policy", "weight": 3}}}, 200)
 	c.must("POST", "/api/me/onboarding/complete", nil, 200)
 }
@@ -300,7 +305,18 @@ func TestEndToEnd(t *testing.T) {
 	other.must("GET", "/api/companies/T_1", nil, 403)
 	other.must("PUT", "/api/companies/T_1", map[string]any{"display_name": "Взлом"}, 403)
 	other.must("GET", "/api/runs/"+runID, nil, 404)
-	cfo.must("GET", "/api/companies/T_1", nil, 200)
+	prof := cfo.must("GET", "/api/companies/T_1", nil, 200)
+	b := prof["user_profile"].(map[string]any)["business"].(map[string]any)
+	if b["source"] != "user" || len(b["currencies"].([]any)) != 1 {
+		t.Fatalf("сведения кабинета: источник задаёт сервер, RUB отбрасывается: %v", b)
+	}
+	var codes []string
+	for _, e := range prof["exposures"].([]any) {
+		codes = append(codes, e.(map[string]any)["code"].(string))
+	}
+	if !strings.Contains(strings.Join(codes, ","), "fx_accounts") || !strings.Contains(strings.Join(codes, ","), "pending_financing") {
+		t.Fatalf("сведения кабинета должны давать чувствительности: %v", codes)
+	}
 	// Анализ коллеги не виден другому пользователю: у other нет полного анализа.
 	if a := other.must("GET", "/api/articles/"+articleID, nil, 200); a["analysis"] != nil {
 		t.Fatal("анализ другого пользователя не должен быть виден")
@@ -326,6 +342,22 @@ func TestEndToEnd(t *testing.T) {
 	if an["sufficient"].(map[string]any)["llm_analyses"] != true {
 		t.Fatal("после анализа должны быть данные для аналитики")
 	}
+	kpi := an["kpi"].(map[string]any)
+	if len(an["monthly"].([]any)) == 0 || kpi["balance"].(map[string]any)["rated"].(float64) == 0 {
+		t.Fatalf("помесячный срез и KPI должны учитывать оценки модели: %v", kpi)
+	}
+
+	// Лендинг: реальный пример без авторизации, без имени пользователя и названия компании.
+	sc := newClient(t, srv.URL).must("GET", "/api/public/showcase", nil, 200)
+	ex, ok := sc["example"].(map[string]any)
+	if !ok || len(ex["lenses"].([]any)) == 0 {
+		t.Fatalf("на лендинге должен быть реальный разбор модели: %v", sc)
+	}
+	raw, _ := json.Marshal(sc)
+	if strings.Contains(string(raw), "@") {
+		t.Fatal("в публичной витрине не должно быть email пользователей")
+	}
+
 	dash := cfo.must("GET", "/api/dashboard", nil, 200)
 	if len(dash["risks"].([]any)) == 0 {
 		t.Fatal("риски из полного анализа должны попасть на главную")

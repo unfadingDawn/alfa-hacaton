@@ -1,0 +1,86 @@
+# AlfaInsight: база данных, Go-backend и Next.js-frontend.
+#
+#   docker compose up -d --build                  — запустить сайт (http://localhost:3000)
+#   docker compose --profile import run --rm importer — один раз загрузить данные кейса
+#
+# Секреты (LLM_API_KEY, JWT_SECRET) берутся из файла .env рядом с этим файлом
+# и передаются только в контейнер api. Во frontend и в образы они не попадают.
+
+name: alfainsight
+
+x-db-url: &db-url postgres://${POSTGRES_USER:-alfa}:${POSTGRES_PASSWORD:-alfa}@db:5432/${POSTGRES_DB:-alfainsight}?sslmode=disable
+
+services:
+  db:
+    # PostgreSQL 16 с расширением pgvector (понадобится для эмбеддингов).
+    image: pgvector/pgvector:pg16
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-alfa}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-alfa}
+      POSTGRES_DB: ${POSTGRES_DB:-alfainsight}
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    # 5433, чтобы не конфликтовать с уже запущенным локальным PostgreSQL (порт 5432).
+    ports:
+      - "127.0.0.1:5433:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-alfa} -d ${POSTGRES_DB:-alfainsight}"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  api:
+    build: ./backend
+    image: alfainsight-backend
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: *db-url
+      HTTP_ADDR: ":8080"
+      ALLOWED_ORIGINS: ${ALLOWED_ORIGINS:-http://localhost:3000}
+    depends_on:
+      db:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:8080:8080"
+    healthcheck:
+      test: ["CMD", "wget", "-qO-", "http://localhost:8080/api/health"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: unless-stopped
+
+  web:
+    build:
+      context: ./frontend
+      args:
+        BACKEND_URL: http://api:8080
+    depends_on:
+      api:
+        condition: service_healthy
+    ports:
+      - "127.0.0.1:3000:3000"
+    restart: unless-stopped
+
+  # Загрузка CSV кейса, аналитики Альфа-Банка и одного опроса RSS. К модели не обращается.
+  # Запускается только явно: docker compose --profile import run --rm importer
+  importer:
+    profiles: ["import"]
+    image: alfainsight-backend
+    build: ./backend
+    command: ["importer", "-data", "/data/raw", "-research", "/data/research", "-news"]
+    env_file:
+      - path: .env
+        required: false
+    environment:
+      DATABASE_URL: *db-url
+    volumes:
+      - ./data:/data:ro
+    depends_on:
+      db:
+        condition: service_healthy
+
+volumes:
+  pgdata:

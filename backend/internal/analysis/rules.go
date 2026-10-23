@@ -96,13 +96,13 @@ func KeywordTopics(title, text string) []TopicScore {
 
 // RuleContext — то, что известно о пользователе и компании без модели.
 type RuleContext struct {
-	CompanyTopics  []string       // темы по ОКВЭД и продуктам компании
-	RoleTopics     []string       // темы роли пользователя
-	Interests      map[string]int // темы интересов пользователя с весом 1..3
-	OkvedDivision  string
-	Region         string
-	Countries      []string
-	ResearchBoost  bool
+	CompanyTopics []string       // темы по ОКВЭД и продуктам компании
+	RoleTopics    []string       // темы роли пользователя
+	Interests     map[string]int // темы интересов пользователя с весом 1..3
+	OkvedDivision string
+	Region        string
+	Countries     []string
+	ResearchBoost bool
 }
 
 type RuleScore struct {

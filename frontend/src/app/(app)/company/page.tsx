@@ -1,8 +1,6 @@
-import type { Metadata } from "next";
-import { CompanyView } from "@/features/company/company";
+import { redirect } from "next/navigation";
 
-export const metadata: Metadata = { title: "Компания" };
-
+// Раздел «Компания» объединён с настройками в «Личный кабинет».
 export default function CompanyPage() {
-  return <CompanyView />;
+  redirect("/cabinet?tab=company");
 }

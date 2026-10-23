@@ -139,7 +139,7 @@ func (a *Agent) LoadUserContext(ctx context.Context, userID uuid.UUID) (*UserCon
 		Horizon: uc.Pers.Horizon, Detail: uc.Pers.Detail, TopicNames: names,
 	}
 	if u.PositionTitle != "" && u.PositionTitle != uc.Role.Title {
-		uc.AC.RoleTitle = uc.Role.Title + " (должность: " + u.PositionTitle + ")"
+		uc.AC.RoleTitle = uc.Role.Title + " (роль, указанная пользователем: " + u.PositionTitle + ")"
 	}
 	uc.RC = analysis.RuleContext{CompanyTopics: prof.AllTopics(), RoleTopics: uc.Role.Topics, Interests: uc.Interests,
 		OkvedDivision: companies.Division(prof.OkvedCode), Region: prof.Region, Countries: prof.Countries,
@@ -223,7 +223,7 @@ func (a *Agent) ScoreByRules(ctx context.Context, userID uuid.UUID) (int, error)
 		return 0, err
 	}
 	rows, err := a.Q.ListArticlesForRules(ctx, dbq.ListArticlesForRulesParams{
-		Since: time.Now().AddDate(0, 0, -60), UserID: userID, Lim: 400})
+		Since: time.Now().AddDate(0, 0, -400), UserID: userID, Lim: 1000})
 	if err != nil {
 		return 0, err
 	}
@@ -649,7 +649,7 @@ var stopWords = map[string]bool{"для": true, "это": true, "как": true, 
 func (a *Agent) searchResearch(ctx context.Context, reg *analysis.Registry, queries []string, t *tracer) {
 	start := time.Now()
 	type hit struct {
-		Query string `json:"query"`
+		Query string   `json:"query"`
 		Found []string `json:"found"`
 	}
 	var hits []hit
