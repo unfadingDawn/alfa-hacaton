@@ -266,6 +266,30 @@ cd backend
 go test -tags=live ./internal/news -run '^TestLiveRSSSmoke$'
 ```
 
+## Evaluation на новых новостях
+
+В `data/evaluation/` находится фиксированный синтетический holdout: 6 компаний разных отраслей, 25 ранее не использованных новостей, 4 роли, нерелевантный шум, неоднозначные события, профиль с неполными данными и межисточниковый дубль. Экспертная разметка задаёт проверяемые свойства результата, но не готовый текст ответа.
+
+Безопасный offline-прогон не обращается к LLM:
+
+```bash
+cd backend
+go run ./cmd/eval -data ../data/evaluation -mode mock -out ../evaluation-results/mock.json
+```
+
+Считаются Precision@K, Recall@K, NDCG@K, совпадение тем, попадание score в диапазон, использование признаков компании, корректность `source_ids`, hallucination rate, JSON success rate, задержка, токены и оценочная стоимость. Mock является локальным baseline и проверяет CI-контур, а не качество LLM.
+
+Live-прогон требует явного подтверждения и по умолчанию ограничен пятью кейсами:
+
+```bash
+set -a; . ./.env; set +a
+cd backend
+go run ./cmd/eval -data ../data/evaluation -mode live -confirm-live \
+  -max-live-cases 5 -out ../evaluation-results/live.json
+```
+
+Предыдущий JSON-отчёт можно передать через `-baseline`, чтобы увидеть изменение метрик после новой версии промпта. Подробности — в `data/evaluation/README.md`.
+
 ## Структура репозитория
 
 ```text
@@ -273,6 +297,7 @@ backend/
   cmd/api/                         HTTP API и фоновые задачи
   cmd/importer/                    импорт CSV, аналитики и RSS
   cmd/llmcheck/                    диагностика шлюза и моделей
+  cmd/eval/                        offline/live evaluation
   api/openapi.yaml                 контракт API
   internal/agent/                  оркестрация агентного workflow
   internal/analysis/               промпты, схемы и валидация
@@ -288,6 +313,7 @@ frontend/src/
   features/                         продуктовые сценарии
   components/                       оболочка и UI-компоненты
 data/research/                      тексты материалов Альфа-Банка
+data/evaluation/                    синтетический holdout и разметка
 data/raw/                           исходные CSV, не отслеживаются Git
 scripts/ocr_research.sh             подготовка исследовательских PDF
 ```
@@ -310,7 +336,7 @@ scripts/ocr_research.sh             подготовка исследовате�
 - внешние RSS-публикации анализируются по заголовку и анонсу, если полный текст не предоставлен источником;
 - качество зависит от полноты обезличенного профиля компании и доступных материалов;
 - переключение на резервный LLM-шлюз выполняется вручную;
-- офлайн-бенчмарк качества на отдельном holdout-наборе пока не входит в репозиторий;
+- offline-evaluation holdout и воспроизводимый CLI входят в репозиторий через `data/evaluation/` и `backend/cmd/eval`; вручного корпуса эталонных текстов ответов пока нет;
 - уточняющие вопросы к уже подготовленному анализу пока не реализованы;
 - интеграция входа из Альфа-Бизнеса представлена интерфейсом провайдера, а не реальным банковским SSO.
 
