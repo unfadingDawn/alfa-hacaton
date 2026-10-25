@@ -28,7 +28,9 @@ type LLM struct {
 	// анализ и на пользователя за последние 24 часа (кэш и ответы без модели не считаются).
 	QuestionsPerAnalysis  int
 	QuestionsPerUserDaily int
-	JSONMode              bool
+	// Вопросы к ИИ-помощнику поддержки за 24 часа (частые вопросы и кэш не считаются).
+	SupportPerUserDaily int
+	JSONMode            bool
 }
 
 type Semantic struct {
@@ -95,6 +97,7 @@ func Load() (Config, error) {
 			PerUserHourly:         envInt("ANALYZE_PER_USER_HOURLY", 10),
 			QuestionsPerAnalysis:  envInt("ANALYSIS_QUESTIONS_PER_ANALYSIS", 10),
 			QuestionsPerUserDaily: envInt("ANALYSIS_QUESTIONS_PER_USER_DAILY", 30),
+			SupportPerUserDaily:   envInt("SUPPORT_QUESTIONS_PER_USER_DAILY", 20),
 			JSONMode:              envBool("LLM_JSON_MODE", true),
 		},
 	}

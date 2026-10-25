@@ -51,6 +51,18 @@ type Quality = {
     validator_corrections: number;
   };
   feedback: { total: number; positive: number; negative: number; with_comment: number; helpfulness_rate: number | null };
+  support: {
+    total: number;
+    from_kb: number;
+    llm_accepted: number;
+    llm_rejected: number;
+    rejected_rate: number | null;
+    cached: number;
+    out_of_scope: number;
+    not_in_kb: number;
+    check_corrections: number;
+    tokens: number;
+  };
   content: {
     analyses_checked: number;
     with_company_factors: number;
@@ -232,6 +244,18 @@ function QualityContent({ data }: { data: Quality }) {
               </ul>
             </div>
           </div>
+        )}
+      </Panel>
+
+      <Panel title="ИИ-помощник поддержки" description="Ответы о работе сервиса и проверка ответов модели по справке">
+        {data.support.total === 0 ? (
+          <p className="text-sm text-ink-soft">Вопросов помощнику пока не было.</p>
+        ) : (
+          <MetricGrid items={[
+            ["Вопросов", data.support.total], ["Из справки без модели", data.support.from_kb],
+            ["Ответов ИИ принято", data.support.llm_accepted], ["Отклонено проверкой", `${data.support.llm_rejected} (${percent(data.support.rejected_rate)})`],
+            ["Исправлений проверки", data.support.check_corrections], ["Вне темы / нет в справке", `${data.support.out_of_scope} / ${data.support.not_in_kb}`],
+          ]} />
         )}
       </Panel>
 

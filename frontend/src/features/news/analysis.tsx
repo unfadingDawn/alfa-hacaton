@@ -2,6 +2,7 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
+import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, Check, CircleAlert, Loader2, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
 import { toast } from "sonner";
 import { useMe } from "@/components/app-shell";
@@ -16,6 +17,7 @@ import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
 import { AccuracyStrip, CompletenessBadge, FactCheckPanel } from "./accuracy";
 import { EvidenceItem, SourceChips } from "./evidence";
+import { AnalyzingMark } from "./analyzing";
 import { AskAnalysis } from "./questions";
 import { AgentTrace } from "./trace";
 import { ImportanceBadge, MethodTag, RelevanceMeter, SaveButton, ShareButton, SourceLine, WhyItMatters, impactTone } from "./parts";
@@ -182,14 +184,36 @@ function RunAnalysis({ a, onDone }: { a: ArticleDetail; onDone: (x: FullAnalysis
             <WhyItMatters a={a.brief} />
           </div>
         )}
-        <p className="max-w-[60ch] text-[15px] leading-relaxed text-ink-soft">
-          Агент составит план, найдёт подтверждения в аналитике Альфа-Банка и связанных новостях, сформулирует последствия для
-          вашей роли и проверит каждый вывод по источникам. Обычно это 4–5 запросов к модели и до минуты ожидания.
-        </p>
-        {err && <AnalyzeError err={err} />}
-        <Button size="lg" className="mt-5" onClick={run} loading={busy}>
-          {!busy && <Sparkles />} {busy ? "Анализ выполняется" : "Запустить анализ"}
-        </Button>
+        {busy ? (
+          <div className="flex flex-col items-center py-6 text-center" role="status" aria-live="polite">
+            <AnalyzingMark size={176} />
+            <p className="mt-6 text-[17px] font-semibold tracking-[-0.01em]">Анализ выполняется</p>
+            <AnimatePresence mode="wait">
+              <motion.p
+                key={stepIdx}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.25 }}
+                className="mt-1 text-[14px] text-ink-soft"
+              >
+                {plannedSteps[stepIdx]}…
+              </motion.p>
+            </AnimatePresence>
+            <p className="mt-3 text-[12px] text-silver">Обычно до минуты. Можно не закрывать страницу — результат сохранится.</p>
+          </div>
+        ) : (
+          <>
+            <p className="max-w-[60ch] text-[15px] leading-relaxed text-ink-soft">
+              Агент составит план, найдёт подтверждения в аналитике Альфа-Банка и связанных новостях, сформулирует последствия для
+              вашей роли и проверит каждый вывод по источникам. Обычно это 4–5 запросов к модели и до минуты ожидания.
+            </p>
+            {err && <AnalyzeError err={err} />}
+            <Button size="lg" className="mt-5" onClick={run}>
+              <Sparkles /> Запустить анализ
+            </Button>
+          </>
+        )}
       </Panel>
       <Panel title="Как строится вывод">
         <ol className="space-y-2.5" aria-live="polite">

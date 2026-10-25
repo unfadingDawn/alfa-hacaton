@@ -231,6 +231,25 @@ type Source struct {
 	FullTextPolicy  string     `json:"full_text_policy"`
 }
 
+type SupportMessage struct {
+	ID            uuid.UUID       `json:"id"`
+	UserID        uuid.UUID       `json:"user_id"`
+	Question      string          `json:"question"`
+	QuestionNorm  string          `json:"question_norm"`
+	Preset        *string         `json:"preset"`
+	Method        string          `json:"method"`
+	Status        string          `json:"status"`
+	Answer        json.RawMessage `json:"answer"`
+	SourceIds     []string        `json:"source_ids"`
+	Model         string          `json:"model"`
+	PromptVersion string          `json:"prompt_version"`
+	Tokens        int32           `json:"tokens"`
+	DurationMs    int32           `json:"duration_ms"`
+	Cached        bool            `json:"cached"`
+	Error         *string         `json:"error"`
+	CreatedAt     time.Time       `json:"created_at"`
+}
+
 type Topic struct {
 	Code        string `json:"code"`
 	Name        string `json:"name"`

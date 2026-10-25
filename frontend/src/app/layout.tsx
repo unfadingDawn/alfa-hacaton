@@ -15,7 +15,7 @@ export default function RootLayout({ children }: { children: React.ReactNode }) 
       <body className="min-h-dvh font-sans">
         {children}
         <Toaster
-          position="bottom-right"
+          position="top-center"
           toastOptions={{
             classNames: {
               toast: "!rounded-[14px] !border-white/80 !bg-white/95 !text-ink !shadow-[var(--shadow-soft)] !font-sans",

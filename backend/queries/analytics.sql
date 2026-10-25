@@ -290,3 +290,17 @@ SELECT coalesce(preset, 'custom')::text AS preset, count(*)::int AS questions
 FROM analysis_questions
 WHERE user_id = @user_id AND created_at >= @since AND status = 'succeeded'
 GROUP BY 1 ORDER BY questions DESC, preset;
+
+-- ИИ-помощник поддержки: как часто ответ модели отклоняется проверкой.
+-- name: UserQualitySupportStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE method = 'kb')::int AS from_kb,
+       count(*) FILTER (WHERE method = 'llm')::int AS llm_accepted,
+       count(*) FILTER (WHERE method = 'fallback')::int AS llm_rejected,
+       count(*) FILTER (WHERE cached)::int AS cached,
+       count(*) FILTER (WHERE coalesce((answer->>'out_of_scope')::boolean, false))::int AS out_of_scope,
+       count(*) FILTER (WHERE coalesce((answer->>'not_in_kb')::boolean, false))::int AS not_in_kb,
+       coalesce(sum(jsonb_array_length(coalesce(answer->'checks'->'notes', '[]'::jsonb))), 0)::int AS check_corrections,
+       coalesce(sum(tokens), 0)::bigint AS tokens
+FROM support_messages
+WHERE user_id = @user_id AND created_at >= @since AND status = 'succeeded';

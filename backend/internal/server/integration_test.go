@@ -60,6 +60,14 @@ func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	var content string
 	switch {
+	case strings.Contains(user, "СПРАВКА:"):
+		if strings.Contains(user, "акции") {
+			content = `{"answer":"Покупайте акции банков.","points":[],"not_in_kb":false,"out_of_scope":true}`
+		} else {
+			content = `{"answer":"Роль меняется в «Личный кабинет». Ещё можно нажать «Сменить линзу» в шапке.","points":[
+			{"text":"Откройте «Личный кабинет» и на вкладке «Профиль» выберите «Роль в принятии решений».","source_ids":["H2"]},
+			{"text":"Позвоните менеджеру банка.","source_ids":[]}],"not_in_kb":false,"out_of_scope":false}`
+		}
 	case strings.Contains(user, "ВОПРОС ПОЛЬЗОВАТЕЛЯ"):
 		m.mu.Lock()
 		m.questions = append(m.questions, user)
@@ -217,7 +225,7 @@ func TestEndToEnd(t *testing.T) {
 		LLM: config.LLM{BaseURL: llmSrv.URL, APIKey: "sk-test", ModelFast: "google/gemma-4-26b-a4b-it",
 			ModelReasoning: "z-ai/glm-5.3-flash", ModelWriter: "qwen/qwen3.6-35b-a3b", Timeout: 10 * time.Second,
 			DailyTokenBudget: 1_000_000, DailyCallLimit: 100, PerMinuteLimit: 100, MaxOutputTokens: 2200, MaxInputChars: 24000,
-			PerUserHourly: 10, QuestionsPerAnalysis: 2, QuestionsPerUserDaily: 30, JSONMode: true}}
+			PerUserHourly: 10, QuestionsPerAnalysis: 2, QuestionsPerUserDaily: 30, SupportPerUserDaily: 10, JSONMode: true}}
 	app := New(cfg, pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := app.Agent.TagKeywordTopics(ctx); err != nil {
 		t.Fatal(err)
@@ -416,6 +424,38 @@ func TestEndToEnd(t *testing.T) {
 	if qq["total"].(float64) != 3 || qq["llm_calls"].(float64) != 2 || qq["deterministic"].(float64) != 1 ||
 		qq["cache_hits"].(float64) != 1 || qq["grounded_rate"].(float64) != 100 {
 		t.Fatalf("метрики вопросов: %v", qq)
+	}
+
+	// ИИ-помощник поддержки: частые вопросы без модели, проверка ответа модели по справке, кэш.
+	sup := cfo.must("GET", "/api/support/assistant", nil, 200)
+	if len(sup["quick_questions"].([]any)) != 4 || sup["llm_available"] != true {
+		t.Fatalf("помощник: %v", sup)
+	}
+	before = mock.calls.Load()
+	kb := cfo.must("POST", "/api/support/assistant", map[string]any{"preset": "run_analysis"}, 200)["item"].(map[string]any)
+	if kb["method"] != "kb" || mock.calls.Load() != before {
+		t.Fatalf("частый вопрос отвечается статьёй справки без модели: %v", kb)
+	}
+	ai := cfo.must("POST", "/api/support/assistant", map[string]any{"question": "Как поменять свою роль?"}, 200)["item"].(map[string]any)
+	aans := ai["answer"].(map[string]any)
+	rawAns, _ := json.Marshal(map[string]any{"answer": aans["answer"], "points": aans["points"]})
+	if ai["method"] != "llm" || mock.calls.Load() != before+1 || strings.Contains(string(rawAns), "Сменить линзу") ||
+		strings.Contains(string(rawAns), "менеджеру") || len(aans["points"].([]any)) != 1 ||
+		len(aans["checks"].(map[string]any)["unknown_ui"].([]any)) != 1 {
+		t.Fatalf("ответ помощника проверяется по справке: %s", rawAns)
+	}
+	if c := proc.must("POST", "/api/support/assistant", map[string]any{"question": "как поменять свою роль"}, 200); !c["cached"].(bool) || mock.calls.Load() != before+1 {
+		t.Fatalf("одинаковый вопрос другого пользователя — из кэша: %v", c)
+	}
+	oos := cfo.must("POST", "/api/support/assistant", map[string]any{"question": "Какие акции купить на этой неделе?"}, 200)["item"].(map[string]any)
+	if !oos["answer"].(map[string]any)["out_of_scope"].(bool) || strings.Contains(fmt.Sprint(oos["answer"]), "Покупайте") {
+		t.Fatalf("вопрос вне темы: %v", oos)
+	}
+	if h := cfo.must("GET", "/api/support/assistant", nil, 200); len(h["items"].([]any)) != 3 {
+		t.Fatalf("история помощника: %v", h["items"])
+	}
+	if s := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)["support"].(map[string]any); s["total"].(float64) != 3 || s["from_kb"].(float64) != 1 {
+		t.Fatalf("метрики помощника: %v", s)
 	}
 
 	// Сохранение и отзыв.

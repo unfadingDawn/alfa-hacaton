@@ -271,8 +271,18 @@ func (h *Handler) quality(w http.ResponseWriter, r *http.Request) {
 		httpx.Internal(w, h.Log, err, "quality question presets")
 		return
 	}
+	sup, err := h.Q.UserQualitySupportStats(ctx, dbq.UserQualitySupportStatsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality support")
+		return
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"period_days": days,
+		"support": map[string]any{
+			"total": sup.Total, "from_kb": sup.FromKb, "llm_accepted": sup.LlmAccepted, "llm_rejected": sup.LlmRejected,
+			"rejected_rate": qualityPercent(sup.LlmRejected, sup.LlmAccepted+sup.LlmRejected), "cached": sup.Cached,
+			"out_of_scope": sup.OutOfScope, "not_in_kb": sup.NotInKb, "check_corrections": sup.CheckCorrections, "tokens": sup.Tokens,
+		},
 		"runs": map[string]any{
 			"total": runs.Total, "succeeded": runs.Succeeded, "failed": runs.Failed,
 			"success_rate": qualityPercent(runs.Succeeded, runs.Total), "json_errors": runs.JsonErrors,

@@ -402,6 +402,53 @@ paths:
         '422': {$ref: '#/components/responses/Validation'}
         '429': {description: 'question_limit или лимиты модели', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
         '502': {$ref: '#/components/responses/Error'}
+  /support/assistant:
+    get:
+      tags: [support]
+      summary: История вопросов ИИ-помощнику, частые вопросы и остаток лимита
+      responses: {'200': {description: OK}}
+    post:
+      tags: [support]
+      summary: Вопрос ИИ-помощнику о работе сервиса
+      description: |
+        Частые вопросы (preset) отвечаются статьёй справки без модели. Свой вопрос — моделью по найденным
+        статьям справки с проверкой: удаляются шаги без опоры, несуществующие разделы, кнопки и адреса;
+        при слабой опоре на справку ответ заменяется статьёй (method=fallback). Вопросы вне темы получают
+        фиксированный ответ.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                question: {type: string, minLength: 3, maxLength: 500}
+                preset: {type: string, enum: [run_analysis, change_role, read_labels, accuracy]}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cached: {type: boolean}
+                  left_today: {type: integer, nullable: true}
+                  item:
+                    type: object
+                    properties:
+                      method: {type: string, enum: [kb, llm, fallback]}
+                      answer:
+                        type: object
+                        properties:
+                          answer: {type: string}
+                          points: {type: array, items: {type: object, properties: {text: {type: string}, source_ids: {type: array, items: {type: string}}}}}
+                          not_in_kb: {type: boolean}
+                          out_of_scope: {type: boolean}
+                          sources: {type: array, items: {type: object, properties: {id: {type: string}, title: {type: string}, link: {type: string}}}}
+                          checks: {type: object, properties: {grounding: {type: number}, unknown_ui: {type: array, items: {type: string}}, unknown_routes: {type: array, items: {type: string}}, rejected: {type: boolean}, notes: {type: array, items: {type: string}}}}
+        '422': {$ref: '#/components/responses/Validation'}
+        '429': {$ref: '#/components/responses/Error'}
   /articles/{id}/save:
     post:
       tags: [news]

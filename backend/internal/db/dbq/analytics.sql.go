@@ -957,6 +957,55 @@ func (q *Queries) UserQualityStepStats(ctx context.Context, arg UserQualityStepS
 	return i, err
 }
 
+const userQualitySupportStats = `-- name: UserQualitySupportStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE method = 'kb')::int AS from_kb,
+       count(*) FILTER (WHERE method = 'llm')::int AS llm_accepted,
+       count(*) FILTER (WHERE method = 'fallback')::int AS llm_rejected,
+       count(*) FILTER (WHERE cached)::int AS cached,
+       count(*) FILTER (WHERE coalesce((answer->>'out_of_scope')::boolean, false))::int AS out_of_scope,
+       count(*) FILTER (WHERE coalesce((answer->>'not_in_kb')::boolean, false))::int AS not_in_kb,
+       coalesce(sum(jsonb_array_length(coalesce(answer->'checks'->'notes', '[]'::jsonb))), 0)::int AS check_corrections,
+       coalesce(sum(tokens), 0)::bigint AS tokens
+FROM support_messages
+WHERE user_id = $1 AND created_at >= $2 AND status = 'succeeded'
+`
+
+type UserQualitySupportStatsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualitySupportStatsRow struct {
+	Total            int32 `json:"total"`
+	FromKb           int32 `json:"from_kb"`
+	LlmAccepted      int32 `json:"llm_accepted"`
+	LlmRejected      int32 `json:"llm_rejected"`
+	Cached           int32 `json:"cached"`
+	OutOfScope       int32 `json:"out_of_scope"`
+	NotInKb          int32 `json:"not_in_kb"`
+	CheckCorrections int32 `json:"check_corrections"`
+	Tokens           int64 `json:"tokens"`
+}
+
+// ИИ-помощник поддержки: как часто ответ модели отклоняется проверкой.
+func (q *Queries) UserQualitySupportStats(ctx context.Context, arg UserQualitySupportStatsParams) (UserQualitySupportStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualitySupportStats, arg.UserID, arg.Since)
+	var i UserQualitySupportStatsRow
+	err := row.Scan(
+		&i.Total,
+		&i.FromKb,
+		&i.LlmAccepted,
+		&i.LlmRejected,
+		&i.Cached,
+		&i.OutOfScope,
+		&i.NotInKb,
+		&i.CheckCorrections,
+		&i.Tokens,
+	)
+	return i, err
+}
+
 const userTopRisksAndOpportunities = `-- name: UserTopRisksAndOpportunities :many
 SELECT pa.article_id, a.title, pa.importance_level, pa.relevance_score, kind::text AS kind, item->>'title' AS item_title,
        item->>'description' AS item_description
