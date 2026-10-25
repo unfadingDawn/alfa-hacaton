@@ -235,7 +235,23 @@ export type RunStep = {
   tokens: number;
   cached?: boolean;
   summary: string;
+  finish_reason?: string;
+  detail?: unknown;
 };
+
+export type Plan = {
+  focus_questions: string[];
+  research_queries: string[];
+  news_queries: string[];
+  company_fact_ids: string[];
+  hypotheses: string[];
+};
+
+export type SearchQuery = { tool: "search_research" | "search_news"; query: string; stage: "plan" | "self_check"; found_ids: string[] };
+export type SourceUse = { id: string; type: Evidence["type"]; title: string; page?: number; query?: string; used: boolean; sections: string[] };
+export type SourcesReport = { sources: SourceUse[]; empty_queries: SearchQuery[]; queries: SearchQuery[]; company_facts_total: number };
+export type CheckIssue = { path: string; problem: string; severity: "low" | "high" };
+export type Revision = { applied: boolean; issues: CheckIssue[]; changes: string[]; note?: string };
 
 export type Run = {
   id: string;
@@ -258,7 +274,17 @@ export type FullAnalysis = {
   why_it_matters: string;
   role_code: string;
   created_at: string;
-  result: { insight: Insight; role?: Role; models?: string[]; generated_at?: string } | null;
+  result: {
+    insight: Insight;
+    role?: Role;
+    models?: string[];
+    generated_at?: string;
+    prompt_version?: string;
+    plan?: Plan;
+    classification?: { event_type?: string; topics?: { code: string }[] };
+    sources_report?: SourcesReport;
+    revision?: Revision;
+  } | null;
 };
 
 export type ArticleDetail = {

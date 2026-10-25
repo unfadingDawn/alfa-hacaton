@@ -934,6 +934,7 @@ SELECT a.id, a.title, a.summary, a.url, a.published_at, s.name AS source_name,
        ts_rank(a.tsv, to_tsquery('russian', $1))::real AS rank
 FROM articles a JOIN sources s ON s.id = a.source_id
 WHERE a.duplicate_of IS NULL
+  AND s.kind <> 'alfa_research' -- материалы банка ищутся отдельным инструментом по фрагментам
   AND a.id <> $2
   AND a.tsv @@ to_tsquery('russian', $1)
 ORDER BY rank DESC, a.published_at DESC

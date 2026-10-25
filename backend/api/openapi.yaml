@@ -318,7 +318,30 @@ paths:
                 type: object
                 properties:
                   cached: {type: boolean}
-                  analysis: {type: object, properties: {result: {type: object, properties: {insight: {$ref: '#/components/schemas/Insight'}}}}}
+                  analysis:
+                    type: object
+                    properties:
+                      result:
+                        type: object
+                        properties:
+                          insight: {$ref: '#/components/schemas/Insight'}
+                          plan: {type: object, description: 'Вопросы, гипотезы, поисковые запросы и признаки компании для проверки'}
+                          sources_report:
+                            type: object
+                            description: Найденные источники, их использование по разделам и запросы без результатов
+                            properties:
+                              sources: {type: array, items: {type: object, properties: {id: {type: string}, type: {type: string}, title: {type: string}, page: {type: integer}, query: {type: string}, used: {type: boolean}, sections: {type: array, items: {type: string}}}}}
+                              empty_queries: {type: array, items: {type: object}}
+                              queries: {type: array, items: {type: object, properties: {tool: {type: string}, query: {type: string}, stage: {type: string, enum: [plan, self_check]}, found_ids: {type: array, items: {type: string}}}}}
+                              company_facts_total: {type: integer}
+                          revision:
+                            type: object
+                            description: Итог самопроверки и что изменилось после доработки
+                            properties:
+                              applied: {type: boolean}
+                              issues: {type: array, items: {type: object, properties: {path: {type: string}, problem: {type: string}, severity: {type: string, enum: [low, high]}}}}
+                              changes: {type: array, items: {type: string}}
+                              note: {type: string}
                   run: {$ref: '#/components/schemas/Run'}
         '409': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/Error'}

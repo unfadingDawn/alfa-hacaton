@@ -71,7 +71,8 @@ func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
 		"summary":"Банк России сохранил ставку.","key_facts":[{"text":"Ставка 14%","confirmed":true}],"dates":[],"entities":[],
 		"indicators":[],"okved_divisions":[],"regions":[],"countries":[],"commodities":[],"is_business_relevant":true}`
 	case strings.Contains(user, "Составь план"):
-		content = `{"focus_questions":["Как изменится стоимость долга?"],"research_queries":["ключевая ставка пауза"],
+		// Рассуждение модели в <think> не должно попадать в трассу и ответ.
+		content = `<think>СКРЫТОЕ-РАССУЖДЕНИЕ про план</think>{"focus_questions":["Как изменится стоимость долга?"],"research_queries":["ключевая ставка пауза","ковенанты облигаций"],
 		"news_queries":[],"company_fact_ids":["C:has_loan"],"hypotheses":["Дорогие кредиты"]}`
 	case strings.Contains(user, "ЧЕРНОВИК"):
 		content = `{"passed":true,"issues":[],"additional_research_queries":[],"comment":"ok"}`
@@ -285,6 +286,31 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatalf("трасса агента: %v", names)
 	}
 	runID := res["run"].(map[string]any)["id"].(string)
+
+	// Раскрытая трасса: план, источники (найденные, использованные, пустые запросы),
+	// итог самопроверки — без скрытых рассуждений модели.
+	rawRes, _ := json.Marshal(res)
+	if strings.Contains(string(rawRes), "СКРЫТОЕ-РАССУЖДЕНИЕ") {
+		t.Fatal("скрытое рассуждение модели попало в ответ API")
+	}
+	result := res["analysis"].(map[string]any)["result"].(map[string]any)
+	srep := result["sources_report"].(map[string]any)
+	if len(srep["empty_queries"].([]any)) != 1 || len(srep["queries"].([]any)) != 2 {
+		t.Fatalf("отчёт об источниках: %v", srep)
+	}
+	var usedR bool
+	for _, x := range srep["sources"].([]any) {
+		m := x.(map[string]any)
+		if strings.HasPrefix(m["id"].(string), "R") && m["used"].(bool) && m["query"] == "ключевая ставка пауза" && len(m["sections"].([]any)) > 0 {
+			usedR = true
+		}
+	}
+	if !usedR {
+		t.Fatalf("материал банка должен быть связан с запросом и разделами анализа: %v", srep["sources"])
+	}
+	if rev := result["revision"].(map[string]any); rev["applied"].(bool) || rev["note"] == "" {
+		t.Fatalf("итог самопроверки: %v", rev)
+	}
 
 	// Повторный запрос — из кэша, без обращения к модели.
 	if res2 := cfo.must("POST", "/api/articles/"+articleID+"/analyze", nil, 200); !res2["cached"].(bool) || mock.calls.Load() != callsAfterFirst {

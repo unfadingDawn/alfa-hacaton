@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useEffect, useState } from "react";
-import { AnimatePresence, motion } from "motion/react";
 import { ArrowLeft, Check, CircleAlert, Loader2, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
 import { toast } from "sonner";
 import { useMe } from "@/components/app-shell";
@@ -18,6 +17,7 @@ import { cn } from "@/lib/utils";
 import { AccuracyStrip, CompletenessBadge, FactCheckPanel } from "./accuracy";
 import { EvidenceItem, SourceChips } from "./evidence";
 import { AskAnalysis } from "./questions";
+import { AgentTrace } from "./trace";
 import { ImportanceBadge, MethodTag, RelevanceMeter, SaveButton, ShareButton, SourceLine, WhyItMatters, impactTone } from "./parts";
 
 const basisMeta = {
@@ -387,6 +387,7 @@ function AnalysisBody({
         )}
 
         <AskAnalysis key={analysis.id + analysis.created_at} articleId={article.id} analysisId={analysis.id} />
+        <AgentTrace analysis={analysis} insight={insight} run={run} evidence={evidence} />
         <Feedback article={article} />
         <Disclaimer />
       </div>
@@ -400,7 +401,6 @@ function AnalysisBody({
           </ul>
         </Panel>
         <FactCheckPanel insight={insight} />
-        {run && <Trace run={run} />}
         <Rerun articleId={article.id} createdAt={analysis.created_at} onDone={onRerun} />
       </aside>
     </div>
@@ -453,54 +453,6 @@ function RiskList({
           ))}
         </ul>
       )}
-    </Panel>
-  );
-}
-
-function Trace({ run }: { run: Run }) {
-  const [open, setOpen] = useState(false);
-  const steps = run.steps ?? [];
-  const tokens = run.prompt_tokens + run.completion_tokens;
-  return (
-    <Panel
-      title="Трасса агента"
-      description={`${steps.length} шагов, ${tokens.toLocaleString("ru-RU")} токенов`}
-      action={
-        <Button variant="link" size="sm" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? "Свернуть" : "Показать"}
-        </Button>
-      }
-    >
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.ol
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="space-y-3 overflow-hidden"
-          >
-            {steps.map((s, i) => (
-              <li key={i} className="text-[13px]">
-                <div className="flex items-center justify-between gap-2">
-                  <span className={cn("font-medium", s.status === "error" && "text-risk")}>
-                    {i + 1}. {s.title}
-                  </span>
-                  <span className="text-silver tabular">{(s.duration_ms / 1000).toFixed(1)} с</span>
-                </div>
-                <p className="text-ink-soft">{s.summary}</p>
-                {s.model && (
-                  <p className="text-silver">
-                    {s.model}
-                    {s.tokens ? `, ${s.tokens} токенов` : ""}
-                    {s.cached ? ", из кэша" : ""}
-                  </p>
-                )}
-              </li>
-            ))}
-            <li className="text-[12px] text-silver">Модели: {run.models.join(", ") || "нет"}</li>
-          </motion.ol>
-        )}
-      </AnimatePresence>
     </Panel>
   );
 }
