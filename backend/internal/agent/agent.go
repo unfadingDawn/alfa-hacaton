@@ -49,10 +49,13 @@ type Agent struct {
 	Companies *companies.Service
 	Log       *slog.Logger
 	// Ограничение полных анализов на пользователя в час.
-	PerUserHourly   int
-	SemanticEnabled bool
-	SemanticConfig  semantic.Config
-	SemanticRefresh time.Duration
+	PerUserHourly int
+	// Лимиты уточняющих вопросов к анализу (обращения к модели).
+	QuestionsPerAnalysis  int
+	QuestionsPerUserDaily int
+	SemanticEnabled       bool
+	SemanticConfig        semantic.Config
+	SemanticRefresh       time.Duration
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{}

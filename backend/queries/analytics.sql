@@ -244,3 +244,30 @@ FROM personal_analyses pa
 LEFT JOIN feedback f ON f.analysis_id = pa.id
 WHERE pa.user_id = @user_id AND pa.depth = 'full' AND pa.method = 'llm' AND pa.created_at >= @since
 GROUP BY 1 ORDER BY analyses DESC, prompt_version;
+
+-- Уточняющие вопросы к анализам: полезность, опора на источники и расход.
+-- name: UserQualityQuestionStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+       count(*) FILTER (WHERE status = 'failed')::int AS failed,
+       count(DISTINCT analysis_id)::int AS analyses,
+       count(*) FILTER (WHERE method = 'llm' AND NOT cached)::int AS llm_calls,
+       count(*) FILTER (WHERE method = 'deterministic')::int AS deterministic,
+       (count(*) FILTER (WHERE cached) + coalesce(sum(cache_hits), 0))::int AS cache_hits,
+       count(*) FILTER (WHERE preset IS NOT NULL)::int AS quick,
+       count(*) FILTER (WHERE status = 'succeeded' AND cardinality(source_ids) > 0)::int AS with_sources,
+       coalesce(round(avg(cardinality(source_ids)) FILTER (WHERE status = 'succeeded'), 2), 0)::numeric(10,2) AS avg_sources,
+       count(*) FILTER (WHERE status = 'succeeded' AND coalesce((answer->>'out_of_scope')::boolean, false))::int AS out_of_scope,
+       count(*) FILTER (WHERE status = 'succeeded' AND coalesce(answer->>'not_in_sources', '') <> '')::int AS not_in_sources,
+       coalesce(sum(CASE WHEN jsonb_typeof(answer->'validation_notes') = 'array'
+         THEN jsonb_array_length(answer->'validation_notes') ELSE 0 END), 0)::int AS validator_corrections,
+       coalesce(round(avg(duration_ms) FILTER (WHERE method = 'llm' AND NOT cached AND status = 'succeeded')), 0)::int AS avg_llm_latency_ms,
+       coalesce(sum(tokens), 0)::bigint AS tokens
+FROM analysis_questions
+WHERE user_id = @user_id AND created_at >= @since;
+
+-- name: UserQualityQuestionPresets :many
+SELECT coalesce(preset, 'custom')::text AS preset, count(*)::int AS questions
+FROM analysis_questions
+WHERE user_id = @user_id AND created_at >= @since AND status = 'succeeded'
+GROUP BY 1 ORDER BY questions DESC, preset;

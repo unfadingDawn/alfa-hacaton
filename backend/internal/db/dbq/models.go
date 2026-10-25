@@ -11,6 +11,30 @@ import (
 	"github.com/google/uuid"
 )
 
+type AnalysisQuestion struct {
+	ID               uuid.UUID       `json:"id"`
+	AnalysisID       uuid.UUID       `json:"analysis_id"`
+	UserID           uuid.UUID       `json:"user_id"`
+	AnalysisHash     string          `json:"analysis_hash"`
+	Question         string          `json:"question"`
+	QuestionNorm     string          `json:"question_norm"`
+	Preset           *string         `json:"preset"`
+	Method           string          `json:"method"`
+	Status           string          `json:"status"`
+	Answer           json.RawMessage `json:"answer"`
+	SourceIds        []string        `json:"source_ids"`
+	Model            string          `json:"model"`
+	PromptVersion    string          `json:"prompt_version"`
+	PromptTokens     int32           `json:"prompt_tokens"`
+	CompletionTokens int32           `json:"completion_tokens"`
+	Tokens           int32           `json:"tokens"`
+	DurationMs       int32           `json:"duration_ms"`
+	Cached           bool            `json:"cached"`
+	CacheHits        int32           `json:"cache_hits"`
+	Error            *string         `json:"error"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
 type AnalysisRun struct {
 	ID               uuid.UUID       `json:"id"`
 	Kind             string          `json:"kind"`

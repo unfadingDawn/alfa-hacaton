@@ -52,6 +52,7 @@ func New(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) *App {
 
 	compSvc := &companies.Service{Q: q}
 	ag := &agent.Agent{Q: q, LLM: client, Companies: compSvc, Log: log, PerUserHourly: cfg.LLM.PerUserHourly,
+		QuestionsPerAnalysis: cfg.LLM.QuestionsPerAnalysis, QuestionsPerUserDaily: cfg.LLM.QuestionsPerUserDaily,
 		Models:          agent.Models{Fast: cfg.LLM.ModelFast, Reasoning: cfg.LLM.ModelReasoning, Writer: cfg.LLM.ModelWriter},
 		SemanticEnabled: cfg.Semantic.Enabled, SemanticRefresh: cfg.Semantic.RefreshInterval,
 		SemanticConfig: semantic.Config{MaxDocuments: cfg.Semantic.MaxDocuments, MaxFeatures: cfg.Semantic.MaxFeatures,

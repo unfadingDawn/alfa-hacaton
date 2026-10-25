@@ -13,9 +13,12 @@ WHERE id = @id;
 -- name: GetRun :one
 SELECT * FROM analysis_runs WHERE id = @id;
 
+-- Дневной расход токенов: запуски агента и уточняющие вопросы к анализам.
 -- name: TokensUsedSince :one
-SELECT coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint AS tokens
-FROM analysis_runs WHERE started_at >= @since;
+SELECT (
+  (SELECT coalesce(sum(prompt_tokens + completion_tokens), 0) FROM analysis_runs WHERE started_at >= @since) +
+  (SELECT coalesce(sum(tokens), 0) FROM analysis_questions WHERE created_at >= @since AND NOT cached)
+)::bigint AS tokens;
 
 -- name: UpsertAnalysis :one
 INSERT INTO personal_analyses (article_id, user_id, company_id, role_code, depth, method, input_hash,

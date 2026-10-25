@@ -254,6 +254,16 @@ func (h *Handler) quality(w http.ResponseWriter, r *http.Request) {
 		httpx.Internal(w, h.Log, err, "quality prompt versions")
 		return
 	}
+	questions, err := h.Q.UserQualityQuestionStats(ctx, dbq.UserQualityQuestionStatsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality questions")
+		return
+	}
+	presets, err := h.Q.UserQualityQuestionPresets(ctx, dbq.UserQualityQuestionPresetsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality question presets")
+		return
+	}
 	httpx.JSON(w, http.StatusOK, map[string]any{
 		"period_days": days,
 		"runs": map[string]any{
@@ -286,8 +296,18 @@ func (h *Handler) quality(w http.ResponseWriter, r *http.Request) {
 			"with_comment":     feedback.WithComment,
 			"helpfulness_rate": qualityPercent(feedback.Positive, feedback.Total),
 		},
+		"questions": map[string]any{
+			"total": questions.Total, "succeeded": questions.Succeeded, "failed": questions.Failed,
+			"success_rate": qualityPercent(questions.Succeeded, questions.Total), "analyses": questions.Analyses,
+			"llm_calls": questions.LlmCalls, "deterministic": questions.Deterministic, "cache_hits": questions.CacheHits,
+			"quick": questions.Quick, "with_sources": questions.WithSources,
+			"grounded_rate": qualityPercent(questions.WithSources, questions.Succeeded), "avg_sources": questions.AvgSources,
+			"out_of_scope": questions.OutOfScope, "not_in_sources": questions.NotInSources,
+			"validator_corrections": questions.ValidatorCorrections, "avg_llm_latency_ms": questions.AvgLlmLatencyMs,
+			"tokens": questions.Tokens, "by_preset": presets,
+		},
 		"daily": daily, "models": models, "prompt_versions": versions,
-		"sufficient": map[string]bool{"runs": runs.Total > 0, "feedback": feedback.Total > 0},
+		"sufficient": map[string]bool{"runs": runs.Total > 0, "feedback": feedback.Total > 0, "questions": questions.Total > 0},
 		"notes": []string{
 			"Метрики рассчитаны только по данным текущего пользователя и не вызывают языковую модель.",
 			"Пустое процентное значение означает, что для расчёта ещё недостаточно данных.",

@@ -281,3 +281,45 @@ export type Dashboard = {
   };
   llm: LlmBrief;
 };
+
+// Уточняющие вопросы к готовому анализу.
+export type AnswerPoint = {
+  text: string;
+  source_ids: string[];
+  basis: "fact" | "bank_view" | "company_data" | "model_inference";
+};
+
+export type QAAnswer = {
+  answer: string;
+  points: AnswerPoint[];
+  not_in_sources: string;
+  out_of_scope: boolean;
+  sources: Evidence[];
+  validation_notes?: string[];
+};
+
+export type AnalysisQuestion = {
+  id: string;
+  question: string;
+  preset: string | null;
+  method: "llm" | "deterministic";
+  answer: QAAnswer;
+  source_ids: string[];
+  model: string;
+  prompt_version: string;
+  tokens: number;
+  duration_ms: number;
+  cached: boolean;
+  created_at: string;
+  outdated: boolean;
+};
+
+export type QuestionLimits = { per_analysis: number; used_for_analysis: number; per_user_daily: number; used_today: number };
+export type QuickQuestion = { code: string; text: string; deterministic: boolean };
+
+export type QuestionHistory = {
+  analysis_id: string;
+  items: AnalysisQuestion[];
+  limits: QuestionLimits;
+  quick_questions: QuickQuestion[];
+};

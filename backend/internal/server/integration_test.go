@@ -32,6 +32,7 @@ type mockLLM struct {
 	mu        sync.Mutex
 	roleSeen  []string
 	modelSeen []string
+	questions []string
 }
 
 func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
@@ -53,6 +54,14 @@ func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	var content string
 	switch {
+	case strings.Contains(user, "ВОПРОС ПОЛЬЗОВАТЕЛЯ"):
+		m.mu.Lock()
+		m.questions = append(m.questions, user)
+		m.mu.Unlock()
+		content = `{"answer":"Оценка высокая: у компании есть кредиты, а ставка не снижается.","points":[
+		{"text":"У компании есть кредитные продукты","source_ids":["C:has_loan"],"basis":"company_data"},
+		{"text":"Банк ожидает снижения ставки","source_ids":["R999999"],"basis":"bank_view"}],
+		"not_in_sources":"","out_of_scope":false}`
 	case strings.Contains(user, "Типы событий"):
 		content = `{"topics":[{"code":"monetary_policy","confidence":0.9}],"event_type":"monetary_policy_decision",
 		"summary":"Банк России сохранил ставку.","key_facts":[{"text":"Ставка 14%","confirmed":true}],"dates":[],"entities":[],
@@ -187,7 +196,7 @@ func TestEndToEnd(t *testing.T) {
 		LLM: config.LLM{BaseURL: llmSrv.URL, APIKey: "sk-test", ModelFast: "google/gemma-4-26b-a4b-it",
 			ModelReasoning: "z-ai/glm-5.3-flash", ModelWriter: "qwen/qwen3.6-35b-a3b", Timeout: 10 * time.Second,
 			DailyTokenBudget: 1_000_000, DailyCallLimit: 100, PerMinuteLimit: 100, MaxOutputTokens: 2200, MaxInputChars: 24000,
-			PerUserHourly: 10, JSONMode: true}}
+			PerUserHourly: 10, QuestionsPerAnalysis: 2, QuestionsPerUserDaily: 30, JSONMode: true}}
 	app := New(cfg, pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := app.Agent.TagKeywordTopics(ctx); err != nil {
 		t.Fatal(err)
@@ -277,6 +286,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Та же новость для руководителя закупок: другая линза, классификация не повторяется.
 	proc.must("POST", "/api/articles/"+articleID+"/analyze", nil, 200)
+	var before int32
 	if got := mock.calls.Load() - callsAfterFirst; got != 3 {
 		t.Fatalf("для второй роли ожидалось 3 запроса (без повторной классификации), было %d", got)
 	}
@@ -291,6 +301,66 @@ func TestEndToEnd(t *testing.T) {
 		if m != "google/gemma-4-26b-a4b-it" && m != "z-ai/glm-5.3-flash" && m != "qwen/qwen3.6-35b-a3b" {
 			t.Fatalf("использована модель вне настроек: %s", m)
 		}
+	}
+
+	// Уточняющие вопросы к готовому анализу.
+	qpath := "/api/articles/" + articleID + "/analysis/questions"
+	if code, out := other.do("POST", qpath, map[string]any{"question": "Почему такая оценка?"}); code != 409 ||
+		out["error"].(map[string]any)["code"] != "no_analysis" {
+		t.Fatalf("вопрос без своего анализа: %d %v", code, out)
+	}
+	other.must("GET", qpath, nil, 409)
+	hist := cfo.must("GET", qpath, nil, 200)
+	if len(hist["items"].([]any)) != 0 || len(hist["quick_questions"].([]any)) != 4 {
+		t.Fatalf("пустая история и быстрые вопросы: %v", hist)
+	}
+	analysisID := hist["analysis_id"].(string)
+	before = mock.calls.Load()
+	det := cfo.must("POST", qpath, map[string]any{"preset": "company_factors", "analysis_id": analysisID}, 200)["item"].(map[string]any)
+	if det["method"] != "deterministic" || mock.calls.Load() != before ||
+		!strings.Contains(fmt.Sprint(det["source_ids"]), "C:has_loan") {
+		t.Fatalf("признаки компании отвечаются без модели и со ссылкой на факт: %v", det)
+	}
+	ask := cfo.must("POST", qpath, map[string]any{"question": "Почему такая оценка?"}, 200)
+	item := ask["item"].(map[string]any)
+	if ask["cached"].(bool) || item["method"] != "llm" || mock.calls.Load() != before+1 || item["preset"] != "why_score" {
+		t.Fatalf("вопрос к модели: %v", ask)
+	}
+	ans := item["answer"].(map[string]any)
+	pts := ans["points"].([]any)
+	if src := fmt.Sprint(item["source_ids"]); strings.Contains(src, "R999999") || !strings.Contains(src, "C:has_loan") ||
+		pts[1].(map[string]any)["basis"] != "model_inference" || len(ans["sources"].([]any)) != 1 {
+		t.Fatalf("ответ должен опираться только на реестр анализа: %v", ans)
+	}
+	mock.mu.Lock()
+	qprompt := mock.questions[len(mock.questions)-1]
+	mock.mu.Unlock()
+	if !strings.Contains(qprompt, "Финансовый директор") || !strings.Contains(qprompt, "[C:has_loan]") {
+		t.Fatal("в промпт вопроса должны попасть роль и реестр источников анализа")
+	}
+	if c := cfo.must("POST", qpath, map[string]any{"question": "  почему ТАКАЯ оценка "}, 200); !c["cached"].(bool) || mock.calls.Load() != before+1 {
+		t.Fatalf("одинаковый вопрос должен браться из кэша: %v", c)
+	}
+	cfo.must("POST", qpath, map[string]any{"question": "аб"}, 422)
+	cfo.must("POST", qpath, map[string]any{"preset": "unknown"}, 422)
+	if code, out := cfo.do("POST", qpath, map[string]any{"question": "Что дальше?", "analysis_id": "00000000-0000-0000-0000-000000000001"}); code != 409 ||
+		out["error"].(map[string]any)["code"] != "stale_analysis" {
+		t.Fatalf("вопрос к устаревшему анализу: %d %v", code, out)
+	}
+	cfo.must("POST", qpath, map[string]any{"preset": "check_first"}, 200)
+	if code, out := cfo.do("POST", qpath, map[string]any{"question": "Как это повлияет на ковенанты?"}); code != 429 ||
+		out["error"].(map[string]any)["code"] != "question_limit" || mock.calls.Load() != before+2 {
+		t.Fatalf("лимит вопросов на анализ: %d %v", code, out)
+	}
+	hist = cfo.must("GET", qpath, nil, 200)
+	lim := hist["limits"].(map[string]any)
+	if len(hist["items"].([]any)) != 3 || lim["used_for_analysis"].(float64) != 2 || lim["per_analysis"].(float64) != 2 {
+		t.Fatalf("история вопросов и лимиты: %v", hist)
+	}
+	qq := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)["questions"].(map[string]any)
+	if qq["total"].(float64) != 3 || qq["llm_calls"].(float64) != 2 || qq["deterministic"].(float64) != 1 ||
+		qq["cache_hits"].(float64) != 1 || qq["grounded_rate"].(float64) != 100 {
+		t.Fatalf("метрики вопросов: %v", qq)
 	}
 
 	// Сохранение и отзыв.
@@ -333,7 +403,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Ошибка лимита провайдера: понятный ответ и пауза без повторов.
 	mock.fail429.Store(true)
-	before := mock.calls.Load()
+	before = mock.calls.Load()
 	if code, out := other.do("POST", "/api/articles/"+articleID+"/analyze", nil); code != 429 ||
 		out["error"].(map[string]any)["code"] != "llm_rate_limited" {
 		t.Fatalf("429 от провайдера: %d %v", code, out)

@@ -6,7 +6,7 @@ info:
     Персональная новостная аналитика для руководителей бизнеса.
     Авторизация — JWT в HttpOnly cookie `ai_access` (15 мин) и refresh-токен в `ai_refresh`.
     Все ошибки возвращаются в формате `{"error": {"code", "message", "fields"}}`.
-    Запросы к языковой модели выполняются только эндпоинтами `POST /articles/{id}/analyze` и `POST /feed/rank`.
+    Запросы к языковой модели выполняются только эндпоинтами `POST /articles/{id}/analyze`, `POST /feed/rank` и `POST /articles/{id}/analysis/questions` (для свободных вопросов).
 servers:
   - url: /api
 security:
@@ -321,6 +321,61 @@ paths:
         '429': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /articles/{id}/analysis/questions:
+    get:
+      tags: [analysis]
+      summary: История уточняющих вопросов к анализу текущего пользователя, лимиты и быстрые вопросы
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  analysis_id: {type: string, format: uuid}
+                  items: {type: array, items: {$ref: '#/components/schemas/AnalysisQuestion'}}
+                  limits: {$ref: '#/components/schemas/QuestionLimits'}
+                  quick_questions:
+                    type: array
+                    items: {type: object, properties: {code: {type: string}, text: {type: string}, deterministic: {type: boolean}}}
+        '409': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [analysis]
+      summary: Уточняющий вопрос к готовому анализу
+      description: |
+        Ответ строится только по сохранённому анализу пользователя и его реестру источников
+        (новость A1, связанные новости N…, материалы банка R…, факты компании C:…).
+        Быстрые вопросы company_factors и confirmed_only отвечаются без модели. Одинаковые вопросы
+        к той же версии анализа берутся из кэша. Лимиты: ANALYSIS_QUESTIONS_PER_ANALYSIS и
+        ANALYSIS_QUESTIONS_PER_USER_DAILY (только реальные обращения к модели).
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                question: {type: string, minLength: 3, maxLength: 500}
+                preset: {type: string, enum: [why_score, company_factors, check_first, confirmed_only]}
+                analysis_id: {type: string, format: uuid, description: Защита от вопроса к пересчитанному анализу}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: {$ref: '#/components/schemas/AnalysisQuestion'}
+                  cached: {type: boolean}
+                  limits: {$ref: '#/components/schemas/QuestionLimits'}
+        '409': {description: 'no_analysis — анализа нет; stale_analysis — анализ пересчитан', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '422': {$ref: '#/components/responses/Validation'}
+        '429': {description: 'question_limit или лимиты модели', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '502': {$ref: '#/components/responses/Error'}
   /articles/{id}/save:
     post:
       tags: [news]
@@ -407,6 +462,44 @@ components:
       description: Ошибка валидации полей
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   schemas:
+    QuestionLimits:
+      type: object
+      properties:
+        per_analysis: {type: integer}
+        used_for_analysis: {type: integer}
+        per_user_daily: {type: integer}
+        used_today: {type: integer}
+    AnalysisQuestion:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        question: {type: string}
+        preset: {type: string, nullable: true}
+        method: {type: string, enum: [llm, deterministic]}
+        answer:
+          type: object
+          properties:
+            answer: {type: string}
+            points:
+              type: array
+              items:
+                type: object
+                properties:
+                  text: {type: string}
+                  source_ids: {type: array, items: {type: string}}
+                  basis: {type: string, enum: [fact, bank_view, company_data, model_inference]}
+            not_in_sources: {type: string}
+            out_of_scope: {type: boolean}
+            sources: {type: array, items: {$ref: '#/components/schemas/Evidence'}}
+            validation_notes: {type: array, items: {type: string}}
+        source_ids: {type: array, items: {type: string}}
+        model: {type: string}
+        prompt_version: {type: string}
+        tokens: {type: integer}
+        duration_ms: {type: integer}
+        cached: {type: boolean}
+        outdated: {type: boolean, description: Вопрос задан к предыдущей версии анализа}
+        created_at: {type: string, format: date-time}
     Error:
       type: object
       properties:

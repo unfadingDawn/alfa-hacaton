@@ -691,6 +691,111 @@ func (q *Queries) UserQualityPromptVersions(ctx context.Context, arg UserQuality
 	return items, nil
 }
 
+const userQualityQuestionPresets = `-- name: UserQualityQuestionPresets :many
+SELECT coalesce(preset, 'custom')::text AS preset, count(*)::int AS questions
+FROM analysis_questions
+WHERE user_id = $1 AND created_at >= $2 AND status = 'succeeded'
+GROUP BY 1 ORDER BY questions DESC, preset
+`
+
+type UserQualityQuestionPresetsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualityQuestionPresetsRow struct {
+	Preset    string `json:"preset"`
+	Questions int32  `json:"questions"`
+}
+
+func (q *Queries) UserQualityQuestionPresets(ctx context.Context, arg UserQualityQuestionPresetsParams) ([]UserQualityQuestionPresetsRow, error) {
+	rows, err := q.db.Query(ctx, userQualityQuestionPresets, arg.UserID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserQualityQuestionPresetsRow{}
+	for rows.Next() {
+		var i UserQualityQuestionPresetsRow
+		if err := rows.Scan(&i.Preset, &i.Questions); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userQualityQuestionStats = `-- name: UserQualityQuestionStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+       count(*) FILTER (WHERE status = 'failed')::int AS failed,
+       count(DISTINCT analysis_id)::int AS analyses,
+       count(*) FILTER (WHERE method = 'llm' AND NOT cached)::int AS llm_calls,
+       count(*) FILTER (WHERE method = 'deterministic')::int AS deterministic,
+       (count(*) FILTER (WHERE cached) + coalesce(sum(cache_hits), 0))::int AS cache_hits,
+       count(*) FILTER (WHERE preset IS NOT NULL)::int AS quick,
+       count(*) FILTER (WHERE status = 'succeeded' AND cardinality(source_ids) > 0)::int AS with_sources,
+       coalesce(round(avg(cardinality(source_ids)) FILTER (WHERE status = 'succeeded'), 2), 0)::numeric(10,2) AS avg_sources,
+       count(*) FILTER (WHERE status = 'succeeded' AND coalesce((answer->>'out_of_scope')::boolean, false))::int AS out_of_scope,
+       count(*) FILTER (WHERE status = 'succeeded' AND coalesce(answer->>'not_in_sources', '') <> '')::int AS not_in_sources,
+       coalesce(sum(CASE WHEN jsonb_typeof(answer->'validation_notes') = 'array'
+         THEN jsonb_array_length(answer->'validation_notes') ELSE 0 END), 0)::int AS validator_corrections,
+       coalesce(round(avg(duration_ms) FILTER (WHERE method = 'llm' AND NOT cached AND status = 'succeeded')), 0)::int AS avg_llm_latency_ms,
+       coalesce(sum(tokens), 0)::bigint AS tokens
+FROM analysis_questions
+WHERE user_id = $1 AND created_at >= $2
+`
+
+type UserQualityQuestionStatsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualityQuestionStatsRow struct {
+	Total                int32   `json:"total"`
+	Succeeded            int32   `json:"succeeded"`
+	Failed               int32   `json:"failed"`
+	Analyses             int32   `json:"analyses"`
+	LlmCalls             int32   `json:"llm_calls"`
+	Deterministic        int32   `json:"deterministic"`
+	CacheHits            int32   `json:"cache_hits"`
+	Quick                int32   `json:"quick"`
+	WithSources          int32   `json:"with_sources"`
+	AvgSources           float64 `json:"avg_sources"`
+	OutOfScope           int32   `json:"out_of_scope"`
+	NotInSources         int32   `json:"not_in_sources"`
+	ValidatorCorrections int32   `json:"validator_corrections"`
+	AvgLlmLatencyMs      int32   `json:"avg_llm_latency_ms"`
+	Tokens               int64   `json:"tokens"`
+}
+
+// Уточняющие вопросы к анализам: полезность, опора на источники и расход.
+func (q *Queries) UserQualityQuestionStats(ctx context.Context, arg UserQualityQuestionStatsParams) (UserQualityQuestionStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualityQuestionStats, arg.UserID, arg.Since)
+	var i UserQualityQuestionStatsRow
+	err := row.Scan(
+		&i.Total,
+		&i.Succeeded,
+		&i.Failed,
+		&i.Analyses,
+		&i.LlmCalls,
+		&i.Deterministic,
+		&i.CacheHits,
+		&i.Quick,
+		&i.WithSources,
+		&i.AvgSources,
+		&i.OutOfScope,
+		&i.NotInSources,
+		&i.ValidatorCorrections,
+		&i.AvgLlmLatencyMs,
+		&i.Tokens,
+	)
+	return i, err
+}
+
 const userQualityRunStats = `-- name: UserQualityRunStats :one
 WITH runs AS (
   SELECT id, kind, status, user_id, company_id, article_id, models, prompt_tokens, completion_tokens, steps, error, started_at, finished_at FROM analysis_runs

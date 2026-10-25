@@ -51,11 +51,39 @@ type Quality = {
     validator_corrections: number;
   };
   feedback: { total: number; positive: number; negative: number; with_comment: number; helpfulness_rate: number | null };
+  questions: {
+    total: number;
+    succeeded: number;
+    failed: number;
+    success_rate: number | null;
+    analyses: number;
+    llm_calls: number;
+    deterministic: number;
+    cache_hits: number;
+    quick: number;
+    with_sources: number;
+    grounded_rate: number | null;
+    avg_sources: number;
+    out_of_scope: number;
+    not_in_sources: number;
+    validator_corrections: number;
+    avg_llm_latency_ms: number;
+    tokens: number;
+    by_preset: { preset: string; questions: number }[];
+  };
   daily: { day: string; runs: number; succeeded: number; failed: number; tokens: number; avg_latency_ms: number }[];
   models: { model: string; calls: number; tokens: number; errors: number; cached: number }[];
   prompt_versions: { prompt_version: string; analyses: number; avg_relevance: number; positive: number; negative: number }[];
-  sufficient: { runs: boolean; feedback: boolean };
+  sufficient: { runs: boolean; feedback: boolean; questions: boolean };
   notes: string[];
+};
+
+const presetLabel: Record<string, string> = {
+  why_score: "Почему такая оценка?",
+  company_factors: "Признаки компании",
+  check_first: "Что проверить первым",
+  confirmed_only: "Только подтверждённое",
+  custom: "Свой вопрос",
 };
 
 const dayFmt = new Intl.DateTimeFormat("ru-RU", { day: "numeric", month: "short" });
@@ -134,6 +162,34 @@ function QualityContent({ data }: { data: Quality }) {
           ]} />
         </Panel>
       </div>
+
+      <Panel title="Уточняющие вопросы к анализам" description="Как пользователи углубляются в готовую аналитику и насколько ответы опираются на источники">
+        {data.questions.total === 0 ? (
+          <p className="text-sm text-ink-soft">Вопросов пока не было. Откройте готовый анализ и воспользуйтесь блоком «Спросить об анализе».</p>
+        ) : (
+          <div className="grid gap-6 lg:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+            <MetricGrid items={[
+              ["Вопросов", data.questions.total], ["Успешно", percent(data.questions.success_rate)],
+              ["С опорой на источники", percent(data.questions.grounded_rate)], ["Источников в ответе", data.questions.avg_sources],
+              ["Запросов к модели", data.questions.llm_calls], ["Без модели", data.questions.deterministic],
+              ["Из кэша", data.questions.cache_hits], ["Анализов с вопросами", data.questions.analyses],
+              ["Нет ответа в источниках", data.questions.not_in_sources], ["Вне рамок анализа", data.questions.out_of_scope],
+              ["Среднее время ответа", seconds(data.questions.avg_llm_latency_ms)], ["Токенов", data.questions.tokens.toLocaleString("ru-RU")],
+            ]} />
+            <div>
+              <p className="text-[12px] text-silver">Какие вопросы задают</p>
+              <ul className="mt-2 space-y-1.5 text-[13px]">
+                {data.questions.by_preset.map((x) => (
+                  <li key={x.preset} className="flex justify-between gap-3">
+                    <span className="text-ink-soft">{presetLabel[x.preset] ?? x.preset}</span>
+                    <span className="font-medium tabular">{x.questions}</span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          </div>
+        )}
+      </Panel>
 
       <Panel title="Динамика запусков" description="Успешные и неуспешные анализы по дням">
         <div className="h-[280px]">

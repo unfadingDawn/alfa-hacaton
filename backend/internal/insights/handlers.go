@@ -18,6 +18,7 @@ import (
 	"github.com/jackc/pgx/v5"
 
 	"github.com/alfainsight/backend/internal/agent"
+	"github.com/alfainsight/backend/internal/analysis"
 	"github.com/alfainsight/backend/internal/auth"
 	"github.com/alfainsight/backend/internal/db/dbq"
 	"github.com/alfainsight/backend/internal/llm"
@@ -38,6 +39,8 @@ func (h *Handler) Routes(r chi.Router) {
 	r.Post("/articles", h.submit)
 	r.Get("/articles/{id}", h.article)
 	r.Post("/articles/{id}/analyze", h.analyze)
+	r.Get("/articles/{id}/analysis/questions", h.questions)
+	r.Post("/articles/{id}/analysis/questions", h.ask)
 	r.Post("/articles/{id}/save", h.save)
 	r.Delete("/articles/{id}/save", h.unsave)
 	r.Post("/articles/{id}/feedback", h.feedback)
@@ -54,6 +57,16 @@ func WriteAgentError(w http.ResponseWriter, log *slog.Logger, err error) {
 		httpx.Error(w, http.StatusConflict, "no_company", "Сначала выберите компанию в настройке профиля")
 	case errors.Is(err, agent.ErrArticleMissing):
 		httpx.Error(w, http.StatusNotFound, "not_found", "Новость не найдена")
+	case errors.Is(err, agent.ErrNoAnalysis):
+		httpx.Error(w, http.StatusConflict, "no_analysis", "Сначала выполните персональный анализ этой новости")
+	case errors.Is(err, agent.ErrStaleAnalysis):
+		httpx.Error(w, http.StatusConflict, "stale_analysis", "Анализ был пересчитан. Обновите страницу и задайте вопрос ещё раз.")
+	case errors.Is(err, agent.ErrQuestionLimit):
+		httpx.Error(w, http.StatusTooManyRequests, "question_limit", "Лимит уточняющих вопросов к модели исчерпан. Быстрые вопросы без модели и ответы из истории доступны.")
+	case errors.Is(err, agent.ErrQuestionLength):
+		httpx.ValidationError(w, map[string]string{"question": "Вопрос от 3 до 500 символов"})
+	case errors.Is(err, agent.ErrUnknownPreset):
+		httpx.ValidationError(w, map[string]string{"preset": "Неизвестный быстрый вопрос"})
 	case errors.Is(err, agent.ErrUserRateLimit):
 		httpx.Error(w, http.StatusTooManyRequests, "user_rate_limited", "Лимит запусков анализа на этот час исчерпан. Ранее выполненные анализы доступны.")
 	case errors.Is(err, llm.ErrNotConfigured):
@@ -326,6 +339,74 @@ func (h *Handler) analyze(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	httpx.JSON(w, http.StatusOK, out)
+}
+
+// visibleArticle проверяет, что статья существует и доступна пользователю:
+// новости, добавленные вручную, видит только автор.
+func (h *Handler) visibleArticle(w http.ResponseWriter, r *http.Request) (uuid.UUID, bool) {
+	id, ok := parseID(w, r)
+	if !ok {
+		return uuid.Nil, false
+	}
+	uid := auth.UserID(r.Context())
+	a, err := h.Q.GetArticle(r.Context(), id)
+	if err != nil || (a.SourceKind == "user_submitted" && (a.SubmittedBy == nil || *a.SubmittedBy != uid)) {
+		httpx.Error(w, http.StatusNotFound, "not_found", "Новость не найдена")
+		return uuid.Nil, false
+	}
+	return id, true
+}
+
+func questionView(q dbq.AnalysisQuestion, currentHash string) map[string]any {
+	return map[string]any{"id": q.ID, "question": q.Question, "preset": q.Preset, "method": q.Method,
+		"answer": json.RawMessage(nullJSON(q.Answer)), "source_ids": q.SourceIds, "model": q.Model,
+		"prompt_version": q.PromptVersion, "tokens": q.Tokens, "duration_ms": q.DurationMs, "cached": q.Cached,
+		"created_at": q.CreatedAt, "outdated": q.AnalysisHash != currentHash}
+}
+
+// questions — история уточняющих вопросов к анализу текущего пользователя.
+func (h *Handler) questions(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.visibleArticle(w, r)
+	if !ok {
+		return
+	}
+	hist, err := h.Agent.Questions(r.Context(), auth.UserID(r.Context()), id)
+	if err != nil {
+		WriteAgentError(w, h.Log, err)
+		return
+	}
+	items := make([]map[string]any, 0, len(hist.Items))
+	for _, q := range hist.Items {
+		items = append(items, questionView(q, hist.AnalysisHash))
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"analysis_id": hist.AnalysisID, "items": items, "limits": hist.Limits,
+		"quick_questions": analysis.QuickQuestions})
+}
+
+// ask — уточняющий вопрос к готовому анализу. Анализ ищется строго по паре
+// статья + текущий пользователь, поэтому спросить о чужом анализе нельзя.
+func (h *Handler) ask(w http.ResponseWriter, r *http.Request) {
+	id, ok := h.visibleArticle(w, r)
+	if !ok {
+		return
+	}
+	var req struct {
+		Question   string     `json:"question"`
+		Preset     string     `json:"preset"`
+		AnalysisID *uuid.UUID `json:"analysis_id"`
+	}
+	if !httpx.DecodeOrFail(w, r, &req) {
+		return
+	}
+	ctx, cancel := context.WithTimeout(r.Context(), 2*time.Minute)
+	defer cancel()
+	res, err := h.Agent.Ask(ctx, auth.UserID(r.Context()), id, req.Question, strings.TrimSpace(req.Preset), req.AnalysisID)
+	if err != nil {
+		WriteAgentError(w, h.Log, err)
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{"item": questionView(res.Question, res.AnalysisHash), "cached": res.Cached,
+		"limits": res.Limits})
 }
 
 type submitReq struct {
