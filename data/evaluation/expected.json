@@ -1,0 +1,50 @@
+{
+  "version": "holdout-2026-10-25.1",
+  "queries": [
+    {"id":"q-metal-cfo","company_id":"eval-metal","role_code":"cfo","interests":{"metals":3,"fx":2,"energy":2,"credit":2}},
+    {"id":"q-retail-procurement","company_id":"eval-retail","role_code":"procurement","interests":{"trade":3,"logistics":3,"consumer_demand":2}},
+    {"id":"q-agro-ceo","company_id":"eval-agro","role_code":"ceo","interests":{"agriculture":3,"trade":2,"inflation":2}},
+    {"id":"q-logistics-cfo","company_id":"eval-logistics","role_code":"cfo","interests":{"logistics":3,"oil_gas":3,"credit":2}},
+    {"id":"q-it-owner","company_id":"eval-it","role_code":"owner","interests":{"technology":3,"regulation":2,"labor":2}},
+    {"id":"q-pharma-procurement","company_id":"eval-pharma","role_code":"procurement","interests":{"regulation":3,"trade":3,"logistics":2}}
+  ],
+  "judgments": [
+    {"query_id":"q-metal-cfo","article_id":"ev-a01","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["metals","trade"],"expected_company_facts":["C:okved","C:fts"],"expected_impact":["risk","mixed"],"must_not_claim":["расходы вырастут на 17%","компания полностью прекратит экспорт"]},
+    {"query_id":"q-metal-cfo","article_id":"ev-a06","expected_relevant":true,"expected_score_range":[60,100],"expected_topics":["fx","trade"],"expected_company_facts":["C:fts"],"expected_impact":["risk","mixed"],"must_not_claim":["курс достигнет 150 рублей"]},
+    {"query_id":"q-metal-cfo","article_id":"ev-a13","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["metals","trade"],"expected_company_facts":["C:okved"],"expected_impact":["risk","opportunity","mixed"],"must_not_claim":["сырьё подешевеет ровно на 10%"]},
+    {"query_id":"q-metal-cfo","article_id":"ev-a22","expected_relevant":true,"expected_score_range":[60,100],"expected_topics":["energy"],"expected_company_facts":["C:energy_cost"],"expected_impact":["risk"],"must_not_claim":["тариф вырастет в два раза"]},
+    {"query_id":"q-metal-cfo","article_id":"ev-a18","expected_relevant":false,"expected_score_range":[0,20],"expected_topics":[],"expected_company_facts":[],"expected_impact":["neutral"],"must_not_claim":[]},
+
+    {"query_id":"q-retail-procurement","article_id":"ev-a02","expected_relevant":true,"expected_score_range":[55,100],"expected_topics":["logistics"],"expected_company_facts":["C:suppliers"],"expected_impact":["risk","mixed"],"must_not_claim":["тарифы вырастут на 30%"]},
+    {"query_id":"q-retail-procurement","article_id":"ev-a06","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["fx","trade"],"expected_company_facts":["C:fts"],"expected_impact":["risk","mixed"],"must_not_claim":["все контракты заключены в долларах"]},
+    {"query_id":"q-retail-procurement","article_id":"ev-a07","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["consumer_demand","retail_wholesale"],"expected_company_facts":["C:okved"],"expected_impact":["risk","opportunity","mixed"],"must_not_claim":["продажи компании уже упали"]},
+    {"query_id":"q-retail-procurement","article_id":"ev-a14","expected_relevant":true,"expected_score_range":[55,100],"expected_topics":["retail_wholesale","regulation"],"expected_company_facts":["C:okved"],"expected_impact":["risk","mixed"],"must_not_claim":["компания продаёт только через маркетплейсы"]},
+    {"query_id":"q-retail-procurement","article_id":"ev-a15","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["logistics","trade"],"expected_company_facts":["C:fts","C:suppliers"],"expected_impact":["risk"],"must_not_claim":["доставка задержится на 45 дней"]},
+    {"query_id":"q-retail-procurement","article_id":"ev-a18","expected_relevant":false,"expected_score_range":[0,20],"expected_topics":[],"expected_company_facts":[],"expected_impact":["neutral"],"must_not_claim":[]},
+
+    {"query_id":"q-agro-ceo","article_id":"ev-a03","expected_relevant":true,"expected_score_range":[70,100],"expected_topics":["agriculture","trade","regulation"],"expected_company_facts":["C:okved","C:fts"],"expected_impact":["risk","mixed"],"must_not_claim":["экспорт компании будет запрещён"]},
+    {"query_id":"q-agro-ceo","article_id":"ev-a11","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["agriculture"],"expected_company_facts":["C:okved"],"expected_impact":["risk","mixed"],"must_not_claim":["урожай компании снизился на 25%"]},
+    {"query_id":"q-agro-ceo","article_id":"ev-a16","expected_relevant":true,"expected_score_range":[45,90],"expected_topics":["regulation","credit"],"expected_company_facts":["C:has_guarantee"],"expected_impact":["risk","opportunity","mixed"],"must_not_claim":["компания уже нарушила условия гарантии"]},
+    {"query_id":"q-agro-ceo","article_id":"ev-a23","expected_relevant":true,"expected_score_range":[55,100],"expected_topics":["agriculture","inflation"],"expected_company_facts":["C:okved"],"expected_impact":["risk","opportunity","mixed"],"must_not_claim":["выручка компании вырастет на 12%"]},
+    {"query_id":"q-agro-ceo","article_id":"ev-a19","expected_relevant":false,"expected_score_range":[0,20],"expected_topics":[],"expected_company_facts":[],"expected_impact":["neutral"],"must_not_claim":[]},
+
+    {"query_id":"q-logistics-cfo","article_id":"ev-a02","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["logistics"],"expected_company_facts":["C:okved"],"expected_impact":["risk","mixed"],"must_not_claim":["все маршруты компании используют РЖД"]},
+    {"query_id":"q-logistics-cfo","article_id":"ev-a08","expected_relevant":true,"expected_score_range":[70,100],"expected_topics":["credit","logistics"],"expected_company_facts":["C:has_leasing"],"expected_impact":["risk"],"must_not_claim":["лизинговый платёж вырастет на 20%"]},
+    {"query_id":"q-logistics-cfo","article_id":"ev-a15","expected_relevant":true,"expected_score_range":[55,100],"expected_topics":["logistics","trade"],"expected_company_facts":["C:fts"],"expected_impact":["risk","mixed"],"must_not_claim":["маршрут компании проходит через закрытый порт"]},
+    {"query_id":"q-logistics-cfo","article_id":"ev-a25","expected_relevant":true,"expected_score_range":[45,90],"expected_topics":["debt_market","logistics"],"expected_company_facts":["C:okved","C:has_leasing"],"expected_impact":["neutral","mixed"],"must_not_claim":["облигации выпускает анализируемая компания"]},
+    {"query_id":"q-logistics-cfo","article_id":"ev-a18","expected_relevant":false,"expected_score_range":[0,20],"expected_topics":[],"expected_company_facts":[],"expected_impact":["neutral"],"must_not_claim":[]},
+
+    {"query_id":"q-it-owner","article_id":"ev-a04","expected_relevant":true,"expected_score_range":[70,100],"expected_topics":["technology","regulation"],"expected_company_facts":["C:okved"],"expected_impact":["risk","opportunity","mixed"],"must_not_claim":["компания хранит данные за рубежом"]},
+    {"query_id":"q-it-owner","article_id":"ev-a09","expected_relevant":true,"expected_score_range":[45,90],"expected_topics":["labor","regulation"],"expected_company_facts":["C:payroll"],"expected_impact":["risk","mixed"],"must_not_claim":["в компании работают иностранные специалисты"]},
+    {"query_id":"q-it-owner","article_id":"ev-a12","expected_relevant":true,"expected_score_range":[70,100],"expected_topics":["technology","regulation"],"expected_company_facts":["C:okved"],"expected_impact":["risk","opportunity","mixed"],"must_not_claim":["у компании уже произошла утечка данных"]},
+    {"query_id":"q-it-owner","article_id":"ev-a24","expected_relevant":true,"expected_score_range":[40,85],"expected_topics":["taxes_budget","regulation"],"expected_company_facts":["C:okved"],"expected_impact":["risk","neutral","mixed"],"must_not_claim":["компания использует устаревший документооборот"]},
+    {"query_id":"q-it-owner","article_id":"ev-a18","expected_relevant":false,"expected_score_range":[0,20],"expected_topics":[],"expected_company_facts":[],"expected_impact":["neutral"],"must_not_claim":[]},
+
+    {"query_id":"q-pharma-procurement","article_id":"ev-a05","expected_relevant":true,"expected_score_range":[70,100],"expected_topics":["regulation","technology"],"expected_company_facts":["C:okved"],"expected_impact":["risk","mixed"],"must_not_claim":["компания не готова к маркировке"]},
+    {"query_id":"q-pharma-procurement","article_id":"ev-a06","expected_relevant":true,"expected_score_range":[65,100],"expected_topics":["fx","trade"],"expected_company_facts":["C:fts"],"expected_impact":["risk","mixed"],"must_not_claim":["все закупки оплачиваются в долларах"]},
+    {"query_id":"q-pharma-procurement","article_id":"ev-a10","expected_relevant":true,"expected_score_range":[75,100],"expected_topics":["trade","logistics","regulation"],"expected_company_facts":["C:fts"],"expected_impact":["risk"],"must_not_claim":["поставки компании уже остановлены"]},
+    {"query_id":"q-pharma-procurement","article_id":"ev-a15","expected_relevant":true,"expected_score_range":[55,100],"expected_topics":["logistics","trade"],"expected_company_facts":["C:fts"],"expected_impact":["risk","mixed"],"must_not_claim":["субстанции перевозятся только морем"]},
+    {"query_id":"q-pharma-procurement","article_id":"ev-a16","expected_relevant":true,"expected_score_range":[60,100],"expected_topics":["regulation","credit"],"expected_company_facts":["C:has_guarantee"],"expected_impact":["risk","opportunity","mixed"],"must_not_claim":["компания участвует в конкретном тендере"]},
+    {"query_id":"q-pharma-procurement","article_id":"ev-a18","expected_relevant":false,"expected_score_range":[0,20],"expected_topics":[],"expected_company_facts":[],"expected_impact":["neutral"],"must_not_claim":[]}
+  ]
+}
