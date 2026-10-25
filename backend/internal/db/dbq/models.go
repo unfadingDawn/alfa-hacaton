@@ -68,6 +68,8 @@ type Article struct {
 	ClassifiedAt   *time.Time      `json:"classified_at"`
 	Classification json.RawMessage `json:"classification"`
 	Tsv            interface{}     `json:"tsv"`
+	ContentLevel   *string         `json:"content_level"`
+	UpdatedAt      *time.Time      `json:"updated_at"`
 }
 
 type ArticleTopic struct {
@@ -226,6 +228,7 @@ type Source struct {
 	LastFetchAt     *time.Time `json:"last_fetch_at"`
 	LastFetchStatus *string    `json:"last_fetch_status"`
 	CategoryFilter  []string   `json:"category_filter"`
+	FullTextPolicy  string     `json:"full_text_policy"`
 }
 
 type Topic struct {

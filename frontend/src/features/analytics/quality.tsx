@@ -51,6 +51,15 @@ type Quality = {
     validator_corrections: number;
   };
   feedback: { total: number; positive: number; negative: number; with_comment: number; helpfulness_rate: number | null };
+  accuracy: {
+    analyses_checked: number;
+    avg_source_coverage: number | null;
+    checked_values: number;
+    unverified_values: number;
+    unverified_value_rate: number | null;
+    with_unverified: number;
+    content_levels: { full_text: number; summary: number; title_only: number };
+  };
   questions: {
     total: number;
     succeeded: number;
@@ -162,6 +171,20 @@ function QualityContent({ data }: { data: Quality }) {
           ]} />
         </Panel>
       </div>
+
+      <Panel title="Фактологическая точность" description="Сверка чисел, дат и названий с источниками и полнота текста новостей">
+        {data.accuracy.analyses_checked === 0 ? (
+          <p className="text-sm text-ink-soft">Метрики появятся для анализов, выполненных после включения проверки фактов.</p>
+        ) : (
+          <MetricGrid items={[
+            ["Покрытие источниками", percent(data.accuracy.avg_source_coverage)], ["Проверено значений", data.accuracy.checked_values],
+            ["Не найдено в источниках", `${data.accuracy.unverified_values} (${percent(data.accuracy.unverified_value_rate)})`],
+            ["Анализов с замечаниями", `${data.accuracy.with_unverified} из ${data.accuracy.analyses_checked}`],
+            ["По полному тексту", data.accuracy.content_levels.full_text],
+            ["По анонсу / заголовку", `${data.accuracy.content_levels.summary} / ${data.accuracy.content_levels.title_only}`],
+          ]} />
+        )}
+      </Panel>
 
       <Panel title="Уточняющие вопросы к анализам" description="Как пользователи углубляются в готовую аналитику и насколько ответы опираются на источники">
         {data.questions.total === 0 ? (

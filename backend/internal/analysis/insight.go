@@ -101,6 +101,23 @@ type Context struct {
 	Horizon      string
 	Detail       string
 	TopicNames   map[string]string
+	// Полнота текста основной новости: title_only | summary | full_text.
+	ContentLevel string
+}
+
+// completenessRule — как учитывать полноту источника в выводах.
+func completenessRule(level string) string {
+	switch level {
+	case "title_only":
+		return "ПОЛНОТА ИСТОЧНИКА: у новости [A1] есть только заголовок. В what_happened.facts — только то, что прямо сказано в заголовке; " +
+			"не домысливай причины, суммы и сроки; importance_level не выше medium, если важность не следует из заголовка; " +
+			"в uncertainty_notes укажи, что текст новости недоступен."
+	case "full_text":
+		return "ПОЛНОТА ИСТОЧНИКА: у новости [A1] доступен полный текст."
+	default:
+		return "ПОЛНОТА ИСТОЧНИКА: у новости [A1] только заголовок и анонс, полного текста нет. Не делай выводов о деталях, " +
+			"которых нет в анонсе, и укажи это в uncertainty_notes."
+	}
 }
 
 func PlanMessages(article Evidence, cls *Classification, ctx Context) []llm.Message {
@@ -190,6 +207,11 @@ type Insight struct {
 	UncertaintyNotes   []string     `json:"uncertainty_notes"`
 	EvidenceSources    []Evidence   `json:"evidence_sources"`
 	Validation         []string     `json:"validation_notes,omitempty"`
+	// Заполняет backend: проверка чисел и названий, покрытие источниками и
+	// полнота текста основной новости. Значения от модели игнорируются.
+	FactCheck          *FactCheck          `json:"fact_check,omitempty"`
+	SourceCoverage     *SourceCoverage     `json:"source_coverage,omitempty"`
+	SourceCompleteness *SourceCompleteness `json:"source_completeness,omitempty"`
 }
 
 const insightSchema = `{
@@ -233,8 +255,10 @@ func InsightMessages(article Evidence, ctx Context, plan *Plan, reg *Registry, r
    зависит от неизвестных данных — запиши это в assumptions/uncertainty_notes.
 6. Учитывай роль: каждое последствие сформулируй через то, что важно этому сотруднику.
 7. Если новость слабо связана с компанией — честно поставь низкую релевантность.
-8. Не выводи рассуждения, мысли, пояснения или блоки <think>. Сразу верни один JSON-объект. relevance_score — целое число от 0 до 100.
-9. ОГРАНИЧЕНИЯ ОБЪЁМА:
+8. Числа, проценты, суммы, сроки, даты и названия организаций переписывай из источников без изменений. Backend сверяет каждое
+   значение с реестром: факт или позиция банка со значением, которого нет в источниках, будет удалён.
+9. Не выводи рассуждения, мысли, пояснения или блоки <think>. Сразу верни один JSON-объект. relevance_score — целое число от 0 до 100.
+10. ОГРАНИЧЕНИЯ ОБЪЁМА:
    - what_happened.summary: максимум 3 предложения.
    - risks, opportunities: не более 3 пунктов каждого.
    - recommended_actions: не более 4 пунктов.
@@ -251,12 +275,15 @@ func InsightMessages(article Evidence, ctx Context, plan *Plan, reg *Registry, r
 
 %s
 
+%s
+
 РЕЕСТР ИСТОЧНИКОВ (ссылайся только на эти ID):
 %s
 %s
 Верни JSON по схеме:
 %s`, ctx.RoleTitle, strings.Join(ctx.RoleFocus, "; "), orDash(ctx.WorkFocus), orDash(strings.Join(ctx.Interests, ", ")),
-		orDash(horizon), detail, ctx.CompanyBrief, orDash(ctx.UserProfile), planText, reg.Render(1000), revision, insightSchema)
+		orDash(horizon), detail, ctx.CompanyBrief, orDash(ctx.UserProfile), planText, completenessRule(ctx.ContentLevel),
+		reg.Render(1000), revision, insightSchema)
 	return []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: user}}
 }
 
@@ -273,6 +300,7 @@ var (
 // Возвращает ошибку, только если ответ непригоден в целом.
 func ValidateInsight(in *Insight, reg *Registry, knownTopics map[string]bool) error {
 	var notes []string
+	in.FactCheck, in.SourceCoverage, in.SourceCompleteness = nil, nil, nil
 	if in.RelevanceScore < 0 || in.RelevanceScore > 100 {
 		notes = append(notes, fmt.Sprintf("relevance_score=%d вне диапазона — ограничен", in.RelevanceScore))
 		in.RelevanceScore = clamp(in.RelevanceScore, 0, 100)
@@ -402,6 +430,7 @@ func ValidateInsight(in *Insight, reg *Registry, knownTopics map[string]bool) er
 	in.RecommendedActions = nonNil(acts)
 	in.Assumptions = nonNil(limitStr(in.Assumptions, 4, 350))
 	in.UncertaintyNotes = nonNil(limitStr(in.UncertaintyNotes, 4, 350))
+	notes = append(notes, FactCheckInsight(in, reg)...)
 	if unknown > 0 {
 		notes = append(notes, fmt.Sprintf("Удалено ссылок на несуществующие или неподходящие источники: %d", unknown))
 	}
@@ -410,6 +439,7 @@ func ValidateInsight(in *Insight, reg *Registry, knownTopics map[string]bool) er
 	}
 	in.Validation = append(in.Validation, notes...)
 	in.EvidenceSources = usedEvidence(in, reg)
+	in.SourceCoverage = ComputeSourceCoverage(in)
 	return nil
 }
 

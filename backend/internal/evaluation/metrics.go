@@ -35,6 +35,10 @@ type AnalysisResult struct {
 	Duration         time.Duration `json:"-"`
 	DurationMS       int64         `json:"duration_ms"`
 	EstimatedCostUSD float64       `json:"estimated_cost_usd"`
+	// Только для полного анализа (live): покрытие источниками и
+	// число значений, не найденных в источниках.
+	SourceCoverage   *float64 `json:"source_coverage,omitempty"`
+	UnverifiedValues int      `json:"unverified_values"`
 }
 
 type CaseResult struct {
@@ -54,6 +58,8 @@ type CaseResult struct {
 	CompletionTokens   int      `json:"completion_tokens"`
 	DurationMS         int64    `json:"duration_ms"`
 	EstimatedCostUSD   float64  `json:"estimated_cost_usd"`
+	SourceCoverage     *float64 `json:"source_coverage,omitempty"`
+	UnverifiedValues   int      `json:"unverified_values"`
 }
 
 type Metrics struct {
@@ -70,6 +76,10 @@ type Metrics struct {
 	AverageLatencyMS    float64 `json:"average_latency_ms"`
 	AverageTokens       float64 `json:"average_tokens"`
 	AverageCostUSD      float64 `json:"average_estimated_cost_usd"`
+	// Доля значимых утверждений с опорой на источники (среднее по кейсам,
+	// где выполнялся полный анализ) и доля кейсов с неподтверждёнными значениями.
+	SourceCoverage      *float64 `json:"source_coverage,omitempty"`
+	UnverifiedValueRate *float64 `json:"unverified_value_rate,omitempty"`
 }
 
 type Report struct {
@@ -172,6 +182,20 @@ func aggregate(report *Report) {
 		report.Metrics.AverageLatencyMS += float64(c.DurationMS)
 		report.Metrics.AverageTokens += float64(c.PromptTokens + c.CompletionTokens)
 		report.Metrics.AverageCostUSD += c.EstimatedCostUSD
+	}
+	covSum, covN, unverified := 0.0, 0, 0
+	for _, c := range report.Cases {
+		if c.SourceCoverage != nil {
+			covSum += *c.SourceCoverage
+			covN++
+			if c.UnverifiedValues > 0 {
+				unverified++
+			}
+		}
+	}
+	if covN > 0 {
+		cov, rate := covSum/float64(covN), float64(unverified)/float64(covN)
+		report.Metrics.SourceCoverage, report.Metrics.UnverifiedValueRate = &cov, &rate
 	}
 	if n := float64(len(report.Cases)); n > 0 {
 		report.Metrics.JSONSuccessRate /= n

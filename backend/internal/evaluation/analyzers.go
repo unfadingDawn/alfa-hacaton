@@ -99,6 +99,13 @@ func (a LiveAnalyzer) Analyze(ctx context.Context, c Company, q Query, article A
 		return out, err
 	}
 	out.Score, out.MatchedTopics, out.Impact = insight.RelevanceScore, insight.MatchedTopics, insight.ImpactType
+	if insight.SourceCoverage != nil {
+		cov := insight.SourceCoverage.Ratio
+		out.SourceCoverage = &cov
+	}
+	if insight.FactCheck != nil {
+		out.UnverifiedValues = len(insight.FactCheck.Unverified)
+	}
 	for _, e := range insight.EvidenceSources {
 		out.SourceIDs = append(out.SourceIDs, e.ID)
 		if e.Type == "company_data" {

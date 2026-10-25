@@ -15,6 +15,7 @@ import { formatDate, horizonLabel, impactLabel, likelihoodLabel } from "@/lib/fo
 import type { ArticleDetail, Evidence, FullAnalysis, Insight, RiskOpp, Run } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { AccuracyStrip, CompletenessBadge, FactCheckPanel } from "./accuracy";
 import { EvidenceItem, SourceChips } from "./evidence";
 import { AskAnalysis } from "./questions";
 import { ImportanceBadge, MethodTag, RelevanceMeter, SaveButton, ShareButton, SourceLine, WhyItMatters, impactTone } from "./parts";
@@ -61,7 +62,7 @@ export function ArticleView({ id }: { id: string }) {
 
 function Article({ a, onAnalyzed }: { a: ArticleDetail; onAnalyzed: (x: FullAnalysis, run?: Run) => void }) {
   const insight = a.analysis?.result?.insight;
-  const showBody = a.body && a.source.kind !== "rss";
+  const showBody = !!a.body;
   return (
     <div>
       <Link href="/feed" className="inline-flex items-center gap-1.5 text-[13px] text-ink-soft hover:text-ink">
@@ -80,6 +81,8 @@ function Article({ a, onAnalyzed }: { a: ArticleDetail; onAnalyzed: (x: FullAnal
           ))}
           <SaveButton id={a.id} saved={a.is_saved} />
           <ShareButton id={a.id} title={a.title} url={a.url} withLabel />
+          <CompletenessBadge c={a.source_completeness} />
+          {a.updated_at && <Badge tone="outline" title="Источник изменил текст публикации; анализ строится по актуальной версии">Обновлено {formatDate(a.updated_at)}</Badge>}
           {a.source.kind === "user_submitted" && <Badge tone="mixed">Добавлено вручную, достоверность не проверена</Badge>}
         </div>
       </header>
@@ -256,6 +259,7 @@ function AnalysisBody({
   return (
     <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="space-y-6">
+        <AccuracyStrip insight={insight} />
         <div className="flex flex-wrap items-center gap-3 text-[12px] text-ink-soft">
           <span>Обозначения:</span>
           <Badge tone="neutral">Факт из новости</Badge>
@@ -336,6 +340,25 @@ function AnalysisBody({
           )}
         </Panel>
 
+        {(insight.assumptions.length > 0 || insight.uncertainty_notes.length > 0) && (
+          <Panel title="Допущения и ограничения" description="Что не подтверждено данными и чего не хватает для точного вывода">
+            <ul className="space-y-2 text-[14px] leading-relaxed text-ink-soft">
+              {insight.assumptions.map((x, i) => (
+                <li key={`a${i}`} className="flex gap-2.5">
+                  <Badge tone="outline" className="shrink-0 whitespace-nowrap self-start">Допущение</Badge>
+                  <span>{x}</span>
+                </li>
+              ))}
+              {insight.uncertainty_notes.map((x, i) => (
+                <li key={`u${i}`} className="flex gap-2.5">
+                  <Badge tone="neutral" className="shrink-0 whitespace-nowrap self-start">Ограничение</Badge>
+                  <span>{x}</span>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
+
         <AskAnalysis key={analysis.id + analysis.created_at} articleId={article.id} analysisId={analysis.id} />
         <Feedback article={article} />
         <Disclaimer />
@@ -349,6 +372,7 @@ function AnalysisBody({
             ))}
           </ul>
         </Panel>
+        <FactCheckPanel insight={insight} />
         {run && <Trace run={run} />}
         <Rerun articleId={article.id} createdAt={analysis.created_at} onDone={onRerun} />
       </aside>

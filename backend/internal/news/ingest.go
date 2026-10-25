@@ -31,6 +31,7 @@ type FeedResult struct {
 	Old        int    `json:"skipped_old"`
 	Inserted   int    `json:"inserted"`
 	Duplicates int    `json:"duplicates"`
+	Updated    int    `json:"updated"`
 	Error      string `json:"error,omitempty"`
 }
 
@@ -47,7 +48,7 @@ func (in *Ingestor) RunOnce(ctx context.Context) []FeedResult {
 	var results []FeedResult
 	for _, f := range feeds {
 		r := in.fetchFeed(ctx, f)
-		status := fmt.Sprintf("ok: получено %d, новых %d, дубликатов %d", r.Fetched, r.Inserted, r.Duplicates)
+		status := fmt.Sprintf("ok: получено %d, новых %d, дубликатов %d, обновлено %d", r.Fetched, r.Inserted, r.Duplicates, r.Updated)
 		if r.Error != "" {
 			status = "ошибка: " + r.Error
 		}
@@ -82,51 +83,98 @@ func (in *Ingestor) fetchFeed(ctx context.Context, f dbq.Source) FeedResult {
 			r.Old++
 			continue
 		}
-		inserted, dup, err := in.store(ctx, f.ID, it, nil)
+		res, err := in.Store(ctx, f, it)
 		if err != nil {
 			in.Log.Warn("store item", "source", f.Code, "err", err)
 			continue
 		}
-		if inserted {
+		switch {
+		case res.Inserted:
 			r.Inserted++
-			if dup {
+			if res.DuplicateOf != nil {
 				r.Duplicates++
 			}
+		case res.Updated:
+			r.Updated++
 		}
 	}
 	return r
 }
 
-// store сохраняет запись; дубликат (по хешу или нормализованному заголовку
-// за 3 дня) сохраняется со ссылкой duplicate_of и в ленту не попадает.
-func (in *Ingestor) store(ctx context.Context, sourceID int32, it Item, submittedBy *uuid.UUID) (inserted, duplicate bool, err error) {
+// StoreResult — что произошло с записью ленты.
+type StoreResult struct {
+	ID          uuid.UUID
+	Inserted    bool       // новая публикация
+	Updated     bool       // та же ссылка, но источник изменил текст
+	DuplicateOf *uuid.UUID // то же событие уже есть (тот же или другой источник)
+}
+
+// Store сохраняет запись ленты.
+//   - Полный текст сохраняется, только если источник сам передаёт его в ленте
+//     и для источника разрешено хранение (full_text_policy = 'feed').
+//   - Та же ссылка с изменённым текстом — обновление публикации, а не новая новость.
+//   - Дубликат (тот же хеш или заголовок за 72 часа либо то же событие в
+//     другом издании за ±48 часов) сохраняется со ссылкой duplicate_of и в
+//     ленту не попадает.
+func (in *Ingestor) Store(ctx context.Context, src dbq.Source, it Item) (StoreResult, error) {
 	title := Truncate(it.Title, 500)
 	summary := Truncate(it.Description, 2000)
+	body := ""
+	if src.FullTextPolicy == "feed" && len([]rune(it.FullText)) > len([]rune(summary))+100 {
+		body = Truncate(it.FullText, 20000)
+	}
 	norm := NormTitle(title)
-	hash := ContentHash(title, summary)
-	var dupOf *uuid.UUID
-	id, err := in.Q.FindDuplicateArticle(ctx, dbq.FindDuplicateArticleParams{
-		ContentHash: hash, TitleNorm: norm, Since: it.Published.Add(-72 * time.Hour)})
-	if err == nil {
-		dupOf = &id
+	hash := ContentHash(title, summary+" "+body)
+
+	if id, err := in.Q.UpdateArticleContent(ctx, dbq.UpdateArticleContentParams{Url: it.Link, Title: title, Summary: summary,
+		Body: body, TitleNorm: norm, ContentHash: hash}); err == nil {
+		return StoreResult{ID: id, Updated: true}, nil
 	} else if !errors.Is(err, pgx.ErrNoRows) {
-		return false, false, err
+		return StoreResult{}, err
+	}
+
+	dupOf, err := in.findDuplicate(ctx, title, norm, hash, it.Published)
+	if err != nil {
+		return StoreResult{}, err
 	}
 	guid := it.GUID
 	if guid == "" {
 		guid = it.Link
 	}
-	_, err = in.Q.InsertArticle(ctx, dbq.InsertArticleParams{
-		SourceID: sourceID, Url: it.Link, Guid: guid, Title: title, Summary: summary, Body: "",
-		PublishedAt: it.Published, TitleNorm: norm, ContentHash: hash, DuplicateOf: dupOf, SubmittedBy: submittedBy,
+	id, err := in.Q.InsertArticle(ctx, dbq.InsertArticleParams{
+		SourceID: src.ID, Url: it.Link, Guid: guid, Title: title, Summary: summary, Body: body,
+		PublishedAt: it.Published, TitleNorm: norm, ContentHash: hash, DuplicateOf: dupOf,
 	})
 	if errors.Is(err, pgx.ErrNoRows) {
-		return false, false, nil // уже есть (ON CONFLICT по url)
+		return StoreResult{}, nil // уже есть с тем же содержанием (ON CONFLICT по url)
 	}
 	if err != nil {
-		return false, false, err
+		return StoreResult{}, err
 	}
-	return true, dupOf != nil, nil
+	return StoreResult{ID: id, Inserted: true, DuplicateOf: dupOf}, nil
+}
+
+func (in *Ingestor) findDuplicate(ctx context.Context, title, norm, hash string, published time.Time) (*uuid.UUID, error) {
+	id, err := in.Q.FindDuplicateArticle(ctx, dbq.FindDuplicateArticleParams{
+		ContentHash: hash, TitleNorm: norm, Since: published.Add(-72 * time.Hour)})
+	if err == nil {
+		return &id, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	cands, err := in.Q.ListDedupCandidates(ctx, dbq.ListDedupCandidatesParams{
+		DateFrom: published.Add(-48 * time.Hour), DateTo: published.Add(48 * time.Hour)})
+	if err != nil {
+		return nil, err
+	}
+	for _, c := range cands {
+		if SameEvent(title, c.Title) {
+			id := c.ID
+			return &id, nil
+		}
+	}
+	return nil, nil
 }
 
 // Submit сохраняет новость, добавленную пользователем для проверки анализа.

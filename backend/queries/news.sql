@@ -26,10 +26,26 @@ VALUES (@source_id, @url, @guid, @title, @summary, @body, @published_at,
 ON CONFLICT (url) DO NOTHING
 RETURNING id;
 
+-- Публикация обновлена источником по тому же URL: обновляем содержание и
+-- сбрасываем классификацию, чтобы анализ строился по актуальному тексту.
+-- name: UpdateArticleContent :one
+UPDATE articles SET title = @title, summary = @summary, body = @body, title_norm = @title_norm,
+  content_hash = @content_hash, updated_at = now(), classification = NULL, classified_at = NULL
+WHERE url = @url AND submitted_by IS NULL AND content_hash <> @content_hash
+RETURNING id;
+
+-- Кандидаты для поиска одного события из разных источников (заголовки за окно).
+-- name: ListDedupCandidates :many
+SELECT id, title, summary, source_id FROM articles
+WHERE duplicate_of IS NULL AND submitted_by IS NULL
+  AND published_at BETWEEN @date_from AND @date_to
+ORDER BY published_at
+LIMIT 500;
+
 -- name: GetArticle :one
 SELECT a.id, a.source_id, a.url, a.guid, a.title, a.summary, a.body, a.published_at, a.fetched_at,
-       a.duplicate_of, a.submitted_by, a.classified_at, a.classification,
-       s.code AS source_code, s.name AS source_name, s.kind AS source_kind
+       a.duplicate_of, a.submitted_by, a.classified_at, a.classification, a.content_level, a.updated_at, a.content_hash,
+       s.code AS source_code, s.name AS source_name, s.kind AS source_kind, s.full_text_policy
 FROM articles a JOIN sources s ON s.id = a.source_id
 WHERE a.id = @id;
 

@@ -10,7 +10,7 @@ import (
 	"github.com/alfainsight/backend/internal/llm"
 )
 
-const PromptVersion = "2026-10-25.1"
+const PromptVersion = "2026-10-25.2"
 
 type Topic struct {
 	Code string

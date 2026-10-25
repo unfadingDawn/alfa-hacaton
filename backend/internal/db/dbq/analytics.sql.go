@@ -458,7 +458,17 @@ SELECT count(*)::int AS total,
        coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'risks', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_risks,
        coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'opportunities', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_opportunities,
        coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'recommended_actions', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_actions,
-       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'validation_notes', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_validation_notes
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'validation_notes', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_validation_notes,
+       -- Фактологическая точность (анализы, выполненные после появления проверки).
+       count(*) FILTER (WHERE result->'insight' ? 'source_coverage')::int AS with_coverage,
+       coalesce(round(avg((result->'insight'->'source_coverage'->>'ratio')::numeric)
+         FILTER (WHERE result->'insight' ? 'source_coverage') * 100), 0)::int AS avg_source_coverage,
+       coalesce(sum((result->'insight'->'fact_check'->>'checked')::int), 0)::int AS checked_values,
+       coalesce(sum(jsonb_array_length(coalesce(result->'insight'->'fact_check'->'unverified', '[]'::jsonb))), 0)::int AS unverified_values,
+       count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'fact_check'->'unverified', '[]'::jsonb)) > 0)::int AS with_unverified,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'full_text')::int AS level_full_text,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'summary')::int AS level_summary,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'title_only')::int AS level_title_only
 FROM fulls
 `
 
@@ -477,6 +487,14 @@ type UserQualityAnalysisStatsRow struct {
 	AvgOpportunities   float64 `json:"avg_opportunities"`
 	AvgActions         float64 `json:"avg_actions"`
 	AvgValidationNotes float64 `json:"avg_validation_notes"`
+	WithCoverage       int32   `json:"with_coverage"`
+	AvgSourceCoverage  int32   `json:"avg_source_coverage"`
+	CheckedValues      int32   `json:"checked_values"`
+	UnverifiedValues   int32   `json:"unverified_values"`
+	WithUnverified     int32   `json:"with_unverified"`
+	LevelFullText      int32   `json:"level_full_text"`
+	LevelSummary       int32   `json:"level_summary"`
+	LevelTitleOnly     int32   `json:"level_title_only"`
 }
 
 // Grounding и наполненность сохранённых полных анализов.
@@ -493,6 +511,14 @@ func (q *Queries) UserQualityAnalysisStats(ctx context.Context, arg UserQualityA
 		&i.AvgOpportunities,
 		&i.AvgActions,
 		&i.AvgValidationNotes,
+		&i.WithCoverage,
+		&i.AvgSourceCoverage,
+		&i.CheckedValues,
+		&i.UnverifiedValues,
+		&i.WithUnverified,
+		&i.LevelFullText,
+		&i.LevelSummary,
+		&i.LevelTitleOnly,
 	)
 	return i, err
 }

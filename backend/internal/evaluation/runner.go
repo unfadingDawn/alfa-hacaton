@@ -149,7 +149,8 @@ func Run(ctx context.Context, d Dataset, analyzer Analyzer, opts Options) (Repor
 			out, analyzeErr := analyzer.Analyze(ctx, c, q, articles[j.ArticleID], p.Score)
 			cr := CaseResult{QueryID: q.ID, ArticleID: j.ArticleID, Mode: analyzer.Mode(), Success: analyzeErr == nil,
 				Score: out.Score, PromptTokens: out.PromptTokens, CompletionTokens: out.CompletionTokens,
-				DurationMS: out.DurationMS, EstimatedCostUSD: out.EstimatedCostUSD}
+				DurationMS: out.DurationMS, EstimatedCostUSD: out.EstimatedCostUSD,
+				SourceCoverage: out.SourceCoverage, UnverifiedValues: out.UnverifiedValues}
 			if analyzeErr != nil {
 				cr.Error = analyzeErr.Error()
 			} else {

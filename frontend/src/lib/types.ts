@@ -202,7 +202,21 @@ export type Insight = {
   uncertainty_notes: string[];
   evidence_sources: Evidence[];
   validation_notes?: string[];
+  fact_check?: FactCheck;
+  source_coverage?: { confirmed: number; total: number; ratio: number };
+  source_completeness?: SourceCompleteness;
 };
+
+export type ContentLevel = "title_only" | "summary" | "full_text";
+export type SourceCompleteness = { level: ContentLevel; label: string; note?: string };
+export type UnverifiedValue = {
+  path: string;
+  kind: "percent" | "money" | "term" | "date" | "year" | "entity";
+  value: string;
+  claim: string;
+  action: "removed" | "marked";
+};
+export type FactCheck = { checked: number; verified: number; unverified: UnverifiedValue[] };
 
 export type RunStep = {
   name: string;
@@ -253,6 +267,9 @@ export type ArticleDetail = {
   run?: Run;
   is_saved: boolean;
   feedback?: { rating: number; comment: string };
+  content_level?: ContentLevel | null;
+  updated_at?: string | null;
+  source_completeness?: SourceCompleteness;
 };
 
 export type GuardStatus = {

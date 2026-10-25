@@ -482,13 +482,14 @@ type Result struct {
 	RunID    *uuid.UUID           `json:"run_id,omitempty"`
 }
 
-func (a *Agent) inputHash(uc *UserContext, articleID uuid.UUID) string {
+func (a *Agent) inputHash(uc *UserContext, articleID uuid.UUID, contentHash string) string {
 	var ints []string
 	for k, v := range uc.Interests {
 		ints = append(ints, fmt.Sprintf("%s:%d", k, v))
 	}
 	sort.Strings(ints)
-	h := sha256.Sum256([]byte(strings.Join([]string{analysis.PromptVersion, articleID.String(), uc.CompanyID, uc.Role.Code,
+	// contentHash: если источник обновил публикацию, анализ строится заново.
+	h := sha256.Sum256([]byte(strings.Join([]string{analysis.PromptVersion, articleID.String(), contentHash, uc.CompanyID, uc.Role.Code,
 		uc.User.PositionTitle, uc.User.WorkFocus, strings.Join(ints, ","), uc.Updated.UTC().Format(time.RFC3339),
 		uc.Pers.Horizon, uc.Pers.Detail, a.Models.Writer}, "|")))
 	return hex.EncodeToString(h[:])
@@ -525,7 +526,14 @@ func (a *Agent) Analyze(ctx context.Context, userID, articleID uuid.UUID, force 
 	if err != nil {
 		return Result{}, err
 	}
-	hash := a.inputHash(uc, articleID)
+	art, err := a.Q.GetArticle(ctx, articleID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, ErrArticleMissing
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	hash := a.inputHash(uc, articleID, art.ContentHash)
 	if !force {
 		if ex, err := a.Q.GetAnalysis(ctx, dbq.GetAnalysisParams{ArticleID: articleID, UserID: userID, Depth: "full"}); err == nil && ex.InputHash == hash {
 			return Result{Analysis: ex, Cached: true, RunID: ex.RunID}, nil
@@ -568,17 +576,21 @@ func (a *Agent) Analyze(ctx context.Context, userID, articleID uuid.UUID, force 
 	if !a.allowUser(userID) {
 		return Result{}, ErrUserRateLimit
 	}
-	return a.run(ctx, uc, articleID, hash)
+	return a.run(ctx, uc, art, hash)
 }
 
-func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, hash string) (Result, error) {
-	art, err := a.Q.GetArticle(ctx, articleID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Result{}, ErrArticleMissing
+func contentLevel(art dbq.GetArticleRow) string {
+	if art.ContentLevel != nil {
+		return *art.ContentLevel
 	}
-	if err != nil {
-		return Result{}, err
-	}
+	return "summary"
+}
+
+func (a *Agent) run(ctx context.Context, uc *UserContext, art dbq.GetArticleRow, hash string) (Result, error) {
+	articleID := art.ID
+	level := contentLevel(art)
+	uc.AC.ContentLevel = level
+	completeness := analysis.CompletenessFor(level)
 	uid := uc.User.ID
 	runID, err := a.Q.CreateRun(ctx, dbq.CreateRunParams{Kind: "analyze", UserID: &uid, CompanyID: &uc.CompanyID, ArticleID: &articleID})
 	if err != nil {
@@ -602,9 +614,9 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, h
 		body = art.Summary + "\n" + firstRunes(art.Body, 5000)
 	}
 	main := analysis.Evidence{ID: "A1", Type: "article", Title: art.Title, URL: art.Url, Date: art.PublishedAt.Format("2006-01-02"),
-		Excerpt: body, Note: "источник: " + art.SourceName}
+		Excerpt: body, Note: "источник: " + art.SourceName + "; полнота: " + strings.ToLower(completeness.Label)}
 	if art.SourceKind == "user_submitted" {
-		main.Note = "добавлено пользователем вручную; достоверность не проверена"
+		main.Note = "добавлено пользователем вручную; достоверность не проверена; полнота: " + strings.ToLower(completeness.Label)
 	}
 	reg.Add(main)
 	start := time.Now()
@@ -659,6 +671,12 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, h
 		draft.UncertaintyNotes = append(draft.UncertaintyNotes, "Автоматическая самопроверка не выполнена: "+err.Error())
 	} else {
 		analysis.ValidateCheck(&chk)
+		// Детерминированная проверка чисел и названий дополняет LLM-контролёра:
+		// неподтверждённое значение — серьёзное замечание и повод для доработки.
+		if issues := analysis.FactCheckIssues(draft); len(issues) > 0 {
+			chk.Issues = append(chk.Issues, issues...)
+			chk.Passed = false
+		}
 		t.llmStep("self_check", "Самопроверка", resp, nil, start,
 			fmt.Sprintf("пройдена: %t, замечаний: %d", chk.Passed, len(chk.Issues)), chk)
 		if !chk.Passed {
@@ -678,6 +696,10 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, h
 		}
 	}
 
+	final.SourceCompleteness = &completeness
+	if completeness.Note != "" {
+		final.UncertaintyNotes = append([]string{completeness.Note}, final.UncertaintyNotes...)
+	}
 	result := map[string]any{"insight": final, "plan": plan, "classification": cls, "role": uc.Role,
 		"models": t.modelList(), "prompt_version": analysis.PromptVersion, "generated_at": time.Now().UTC(),
 		"company_id": uc.CompanyID}
@@ -706,6 +728,12 @@ func (a *Agent) draft(ctx context.Context, main analysis.Evidence, uc *UserConte
 	t.llmStep(name, title, resp, nil, start, fmt.Sprintf("релевантность %d, важность %s, рисков %d, возможностей %d, источников %d, исправлений валидатора %d",
 		in.RelevanceScore, in.ImportanceLevel, len(in.Risks), len(in.Opportunities), len(in.EvidenceSources), len(in.Validation)),
 		map[string]any{"validation_notes": in.Validation})
+	if in.FactCheck != nil {
+		t.toolStep("fact_check_"+name, "Проверка чисел, дат и названий", time.Now(),
+			fmt.Sprintf("проверено значений: %d, не найдено в источниках: %d; покрытие источниками %d из %d утверждений",
+				in.FactCheck.Checked, len(in.FactCheck.Unverified), in.SourceCoverage.Confirmed, in.SourceCoverage.Total),
+			map[string]any{"fact_check": in.FactCheck, "source_coverage": in.SourceCoverage})
+	}
 	return &in, nil
 }
 

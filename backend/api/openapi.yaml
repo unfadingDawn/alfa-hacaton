@@ -292,6 +292,9 @@ paths:
     get:
       tags: [news]
       summary: Новость, темы, классификация, оценки и сохранённый анализ с трассой
+      description: |
+        content_level — полнота текста (title_only | summary | full_text), updated_at — когда источник
+        обновил публикацию по тому же URL, body — полный текст, если его разрешено хранить.
       parameters: [{$ref: '#/components/parameters/ArticleID'}]
       responses:
         '200': {description: OK}
@@ -653,6 +656,35 @@ components:
         uncertainty_notes: {type: array, items: {type: string}}
         evidence_sources: {type: array, items: {$ref: '#/components/schemas/Evidence'}}
         validation_notes: {type: array, items: {type: string}}
+        fact_check:
+          type: object
+          description: Заполняет backend. Проценты, суммы, сроки, даты и названия из анализа, сверенные с реестром источников.
+          properties:
+            checked: {type: integer}
+            verified: {type: integer}
+            unverified:
+              type: array
+              items:
+                type: object
+                properties:
+                  path: {type: string, example: 'risks[0]'}
+                  kind: {type: string, enum: [percent, money, term, date, year, entity]}
+                  value: {type: string}
+                  claim: {type: string}
+                  action: {type: string, enum: [removed, marked], description: 'removed — факт или позиция банка удалены; marked — значение помечено'}
+        source_coverage:
+          type: object
+          description: Подтверждённые источниками утверждения / все значимые утверждения.
+          properties:
+            confirmed: {type: integer}
+            total: {type: integer}
+            ratio: {type: number, minimum: 0, maximum: 1}
+        source_completeness:
+          type: object
+          properties:
+            level: {type: string, enum: [title_only, summary, full_text]}
+            label: {type: string}
+            note: {type: string}
     Run:
       type: object
       properties:

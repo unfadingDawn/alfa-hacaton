@@ -202,6 +202,13 @@ func (h *Handler) analytics(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func nilIfZero(v, n int32) any {
+	if n == 0 {
+		return nil
+	}
+	return v
+}
+
 func qualityPercent(a, b int32) any {
 	if b == 0 {
 		return nil
@@ -290,6 +297,14 @@ func (h *Handler) quality(w http.ResponseWriter, r *http.Request) {
 			"self_check_pass_rate": qualityPercent(steps.SelfCheckPassed, steps.SelfChecks),
 			"revisions":            steps.Revisions, "revised_analyses": analyses.Revised,
 			"validator_corrections": steps.ValidatorCorrections,
+		},
+		"accuracy": map[string]any{
+			"analyses_checked": analyses.WithCoverage, "avg_source_coverage": nilIfZero(analyses.AvgSourceCoverage, analyses.WithCoverage),
+			"checked_values": analyses.CheckedValues, "unverified_values": analyses.UnverifiedValues,
+			"unverified_value_rate": qualityPercent(analyses.UnverifiedValues, analyses.CheckedValues),
+			"with_unverified":       analyses.WithUnverified,
+			"content_levels": map[string]int32{"full_text": analyses.LevelFullText, "summary": analyses.LevelSummary,
+				"title_only": analyses.LevelTitleOnly},
 		},
 		"feedback": map[string]any{
 			"total": feedback.Total, "positive": feedback.Positive, "negative": feedback.Negative,

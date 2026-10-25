@@ -154,8 +154,8 @@ func (q *Queries) FindDuplicateArticle(ctx context.Context, arg FindDuplicateArt
 
 const getArticle = `-- name: GetArticle :one
 SELECT a.id, a.source_id, a.url, a.guid, a.title, a.summary, a.body, a.published_at, a.fetched_at,
-       a.duplicate_of, a.submitted_by, a.classified_at, a.classification,
-       s.code AS source_code, s.name AS source_name, s.kind AS source_kind
+       a.duplicate_of, a.submitted_by, a.classified_at, a.classification, a.content_level, a.updated_at, a.content_hash,
+       s.code AS source_code, s.name AS source_name, s.kind AS source_kind, s.full_text_policy
 FROM articles a JOIN sources s ON s.id = a.source_id
 WHERE a.id = $1
 `
@@ -174,9 +174,13 @@ type GetArticleRow struct {
 	SubmittedBy    *uuid.UUID      `json:"submitted_by"`
 	ClassifiedAt   *time.Time      `json:"classified_at"`
 	Classification json.RawMessage `json:"classification"`
+	ContentLevel   *string         `json:"content_level"`
+	UpdatedAt      *time.Time      `json:"updated_at"`
+	ContentHash    string          `json:"content_hash"`
 	SourceCode     string          `json:"source_code"`
 	SourceName     string          `json:"source_name"`
 	SourceKind     string          `json:"source_kind"`
+	FullTextPolicy string          `json:"full_text_policy"`
 }
 
 func (q *Queries) GetArticle(ctx context.Context, id uuid.UUID) (GetArticleRow, error) {
@@ -196,15 +200,19 @@ func (q *Queries) GetArticle(ctx context.Context, id uuid.UUID) (GetArticleRow, 
 		&i.SubmittedBy,
 		&i.ClassifiedAt,
 		&i.Classification,
+		&i.ContentLevel,
+		&i.UpdatedAt,
+		&i.ContentHash,
 		&i.SourceCode,
 		&i.SourceName,
 		&i.SourceKind,
+		&i.FullTextPolicy,
 	)
 	return i, err
 }
 
 const getSourceByCode = `-- name: GetSourceByCode :one
-SELECT id, code, name, kind, feed_url, homepage, terms_note, enabled, last_fetch_at, last_fetch_status, category_filter FROM sources WHERE code = $1
+SELECT id, code, name, kind, feed_url, homepage, terms_note, enabled, last_fetch_at, last_fetch_status, category_filter, full_text_policy FROM sources WHERE code = $1
 `
 
 func (q *Queries) GetSourceByCode(ctx context.Context, code string) (Source, error) {
@@ -222,6 +230,7 @@ func (q *Queries) GetSourceByCode(ctx context.Context, code string) (Source, err
 		&i.LastFetchAt,
 		&i.LastFetchStatus,
 		&i.CategoryFilter,
+		&i.FullTextPolicy,
 	)
 	return i, err
 }
@@ -392,8 +401,54 @@ func (q *Queries) ListArticlesWithoutTopics(ctx context.Context, lim int32) ([]L
 	return items, nil
 }
 
+const listDedupCandidates = `-- name: ListDedupCandidates :many
+SELECT id, title, summary, source_id FROM articles
+WHERE duplicate_of IS NULL AND submitted_by IS NULL
+  AND published_at BETWEEN $1 AND $2
+ORDER BY published_at
+LIMIT 500
+`
+
+type ListDedupCandidatesParams struct {
+	DateFrom time.Time `json:"date_from"`
+	DateTo   time.Time `json:"date_to"`
+}
+
+type ListDedupCandidatesRow struct {
+	ID       uuid.UUID `json:"id"`
+	Title    string    `json:"title"`
+	Summary  string    `json:"summary"`
+	SourceID int32     `json:"source_id"`
+}
+
+// Кандидаты для поиска одного события из разных источников (заголовки за окно).
+func (q *Queries) ListDedupCandidates(ctx context.Context, arg ListDedupCandidatesParams) ([]ListDedupCandidatesRow, error) {
+	rows, err := q.db.Query(ctx, listDedupCandidates, arg.DateFrom, arg.DateTo)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []ListDedupCandidatesRow{}
+	for rows.Next() {
+		var i ListDedupCandidatesRow
+		if err := rows.Scan(
+			&i.ID,
+			&i.Title,
+			&i.Summary,
+			&i.SourceID,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
 const listEnabledFeeds = `-- name: ListEnabledFeeds :many
-SELECT id, code, name, kind, feed_url, homepage, terms_note, enabled, last_fetch_at, last_fetch_status, category_filter FROM sources WHERE kind = 'rss' AND enabled AND feed_url IS NOT NULL ORDER BY id
+SELECT id, code, name, kind, feed_url, homepage, terms_note, enabled, last_fetch_at, last_fetch_status, category_filter, full_text_policy FROM sources WHERE kind = 'rss' AND enabled AND feed_url IS NOT NULL ORDER BY id
 `
 
 func (q *Queries) ListEnabledFeeds(ctx context.Context) ([]Source, error) {
@@ -417,6 +472,7 @@ func (q *Queries) ListEnabledFeeds(ctx context.Context) ([]Source, error) {
 			&i.LastFetchAt,
 			&i.LastFetchStatus,
 			&i.CategoryFilter,
+			&i.FullTextPolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -737,7 +793,7 @@ func (q *Queries) ListSemanticCorpus(ctx context.Context, lim int32) ([]ListSema
 }
 
 const listSources = `-- name: ListSources :many
-SELECT id, code, name, kind, feed_url, homepage, terms_note, enabled, last_fetch_at, last_fetch_status, category_filter FROM sources ORDER BY id
+SELECT id, code, name, kind, feed_url, homepage, terms_note, enabled, last_fetch_at, last_fetch_status, category_filter, full_text_policy FROM sources ORDER BY id
 `
 
 func (q *Queries) ListSources(ctx context.Context) ([]Source, error) {
@@ -761,6 +817,7 @@ func (q *Queries) ListSources(ctx context.Context) ([]Source, error) {
 			&i.LastFetchAt,
 			&i.LastFetchStatus,
 			&i.CategoryFilter,
+			&i.FullTextPolicy,
 		); err != nil {
 			return nil, err
 		}
@@ -953,6 +1010,38 @@ type UnsaveArticleParams struct {
 func (q *Queries) UnsaveArticle(ctx context.Context, arg UnsaveArticleParams) error {
 	_, err := q.db.Exec(ctx, unsaveArticle, arg.UserID, arg.ArticleID)
 	return err
+}
+
+const updateArticleContent = `-- name: UpdateArticleContent :one
+UPDATE articles SET title = $1, summary = $2, body = $3, title_norm = $4,
+  content_hash = $5, updated_at = now(), classification = NULL, classified_at = NULL
+WHERE url = $6 AND submitted_by IS NULL AND content_hash <> $5
+RETURNING id
+`
+
+type UpdateArticleContentParams struct {
+	Title       string `json:"title"`
+	Summary     string `json:"summary"`
+	Body        string `json:"body"`
+	TitleNorm   string `json:"title_norm"`
+	ContentHash string `json:"content_hash"`
+	Url         string `json:"url"`
+}
+
+// Публикация обновлена источником по тому же URL: обновляем содержание и
+// сбрасываем классификацию, чтобы анализ строился по актуальному тексту.
+func (q *Queries) UpdateArticleContent(ctx context.Context, arg UpdateArticleContentParams) (uuid.UUID, error) {
+	row := q.db.QueryRow(ctx, updateArticleContent,
+		arg.Title,
+		arg.Summary,
+		arg.Body,
+		arg.TitleNorm,
+		arg.ContentHash,
+		arg.Url,
+	)
+	var id uuid.UUID
+	err := row.Scan(&id)
+	return id, err
 }
 
 const updateSourceFetchStatus = `-- name: UpdateSourceFetchStatus :exec

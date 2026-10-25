@@ -21,6 +21,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+
+	"github.com/alfainsight/backend/internal/db/dbq"
+	"github.com/alfainsight/backend/internal/news"
 	"github.com/alfainsight/backend/internal/platform/config"
 	"github.com/alfainsight/backend/internal/platform/db"
 	"github.com/alfainsight/backend/migrations"
@@ -274,7 +278,7 @@ func TestEndToEnd(t *testing.T) {
 	for _, s := range steps {
 		names = append(names, s.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "classify,company_profile,plan,search_research,draft,self_check" {
+	if strings.Join(names, ",") != "classify,company_profile,plan,search_research,draft,fact_check_draft,self_check" {
 		t.Fatalf("трасса агента: %v", names)
 	}
 	runID := res["run"].(map[string]any)["id"].(string)
@@ -357,7 +361,12 @@ func TestEndToEnd(t *testing.T) {
 	if len(hist["items"].([]any)) != 3 || lim["used_for_analysis"].(float64) != 2 || lim["per_analysis"].(float64) != 2 {
 		t.Fatalf("история вопросов и лимиты: %v", hist)
 	}
-	qq := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)["questions"].(map[string]any)
+	qall := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)
+	if acc := qall["accuracy"].(map[string]any); acc["analyses_checked"].(float64) != 1 || acc["avg_source_coverage"] == nil ||
+		acc["content_levels"].(map[string]any)["title_only"].(float64) != 1 {
+		t.Fatalf("метрики фактологической точности: %v", acc)
+	}
+	qq := qall["questions"].(map[string]any)
 	if qq["total"].(float64) != 3 || qq["llm_calls"].(float64) != 2 || qq["deterministic"].(float64) != 1 ||
 		qq["cache_hits"].(float64) != 1 || qq["grounded_rate"].(float64) != 100 {
 		t.Fatalf("метрики вопросов: %v", qq)
@@ -438,9 +447,102 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal("риски из полного анализа должны попасть на главную")
 	}
 
+	// Полнота источника и покрытие источниками в полном анализе.
+	if insight["source_completeness"].(map[string]any)["level"] != "title_only" ||
+		insight["source_coverage"].(map[string]any)["total"].(float64) == 0 || insight["fact_check"] == nil {
+		t.Fatalf("полнота источника, покрытие и проверка фактов: %v", insight)
+	}
+
+	testIngestion(t, ctx, pool, app)
+
 	// Выход.
 	cfo.must("POST", "/api/auth/logout", nil, 200)
 	if code, _ := cfo.do("GET", "/api/me", nil); code != 401 {
 		t.Fatal("после выхода доступ должен закрываться")
+	}
+}
+
+// testIngestion — дедупликация, обновление публикаций и полнота текста на настоящей БД.
+func testIngestion(t *testing.T, ctx context.Context, pool *pgxpool.Pool, app *App) {
+	q := dbq.New(pool)
+	src := func(code string) dbq.Source {
+		s, err := q.GetSourceByCode(ctx, code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	tass, interfax, cbr := src("tass"), src("interfax"), src("cbr_press")
+	now := time.Now()
+	store := func(s dbq.Source, title, desc, link, full string) news.StoreResult {
+		t.Helper()
+		r, err := app.Ingestor.Store(ctx, s, news.Item{Title: title, Description: desc, Link: link, FullText: full, Published: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	level := func(id any) (string, string) {
+		var lvl, body string
+		if err := pool.QueryRow(ctx, `SELECT content_level, body FROM articles WHERE id = $1`, id).Scan(&lvl, &body); err != nil {
+			t.Fatal(err)
+		}
+		return lvl, body
+	}
+
+	// Одна новость из нескольких источников: близкий заголовок другого издания.
+	r := store(tass, "Банк России сохранил ключевую ставку на уровне 14% годовых",
+		"Совет директоров Банка России принял решение сохранить ключевую ставку на уровне 14% годовых.", "https://tass.test/1", "")
+	if !r.Inserted || r.DuplicateOf == nil {
+		t.Fatalf("тот же факт из другого источника должен стать дубликатом: %+v", r)
+	}
+	// Похожая, но другая новость: другое направление и число.
+	if r := store(interfax, "ЦБ повысил ключевую ставку до 15%", "Банк России неожиданно повысил ставку до 15% годовых.", "https://ifx.test/1", ""); r.DuplicateOf != nil {
+		t.Fatal("повышение ставки — другое событие, не дубликат сохранения")
+	}
+	// Разный регистр написания.
+	a := store(tass, "МИНФИН РАЗМЕСТИЛ ОФЗ НА 50 МЛРД РУБЛЕЙ", "", "https://tass.test/2", "")
+	if r := store(interfax, "Минфин разместил ОФЗ на 50 млрд рублей", "Аукцион прошёл успешно.", "https://ifx.test/2", ""); r.DuplicateOf == nil || *r.DuplicateOf != a.ID {
+		t.Fatalf("регистр не должен мешать дедупликации: %+v", r)
+	}
+	if r := store(interfax, "Минфин разместил ОФЗ на 30 млрд рублей", "", "https://ifx.test/3", ""); r.DuplicateOf != nil {
+		t.Fatal("другая сумма размещения — другое событие")
+	}
+	if lvl, _ := level(a.ID); lvl != "title_only" {
+		t.Fatalf("без анонса — только заголовок, получено %s", lvl)
+	}
+
+	// Обновление старой публикации: та же ссылка, новый текст.
+	orig := store(interfax, "Сбербанк изменил ставки по вкладам", "Банк изменил ставки по ряду вкладов с понедельника.", "https://ifx.test/4", "")
+	if _, err := pool.Exec(ctx, `UPDATE articles SET classification = '{"x":1}', classified_at = now() WHERE id = $1`, orig.ID); err != nil {
+		t.Fatal(err)
+	}
+	upd := store(interfax, "Сбербанк повысил ставки по вкладам до 18%", "Банк повысил ставки по вкладам до 18% годовых с понедельника.", "https://ifx.test/4", "")
+	if !upd.Updated || upd.ID != orig.ID {
+		t.Fatalf("та же ссылка с новым текстом — обновление, а не новая новость: %+v", upd)
+	}
+	var title string
+	var classified, updatedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT title, classified_at, updated_at FROM articles WHERE id = $1`, orig.ID).Scan(&title, &classified, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(title, "18%") || classified != nil || updatedAt == nil {
+		t.Fatalf("обновлённая публикация: заголовок %q, классификация сброшена %v, updated_at %v", title, classified == nil, updatedAt)
+	}
+	if again := store(interfax, "Сбербанк повысил ставки по вкладам до 18%", "Банк повысил ставки по вкладам до 18% годовых с понедельника.", "https://ifx.test/4", ""); again.Inserted || again.Updated {
+		t.Fatalf("повтор без изменений ничего не меняет: %+v", again)
+	}
+
+	// Полный текст: только если источник передаёт его в ленте и это разрешено.
+	full := strings.Repeat("Банк России опубликовал решение по ключевой ставке и сопроводительный комментарий. ", 6)
+	if r := store(cbr, "Банк России опубликовал резюме обсуждения ключевой ставки", "Резюме обсуждения ключевой ставки за сентябрь опубликовано на сайте.", "https://cbr.test/9", full); true {
+		if lvl, body := level(r.ID); lvl != "full_text" || body == "" {
+			t.Fatalf("официальная лента с разрешённым полным текстом: %s", lvl)
+		}
+	}
+	if r := store(tass, "Росстат опубликовал данные о промышленном производстве", "Промышленное производство в сентябре выросло на 2,1% в годовом выражении.", "https://tass.test/9", full); true {
+		if lvl, body := level(r.ID); lvl != "summary" || body != "" {
+			t.Fatalf("полный текст СМИ не сохраняется без разрешения: %s %q", lvl, body)
+		}
 	}
 }

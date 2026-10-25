@@ -269,9 +269,13 @@ func (h *Handler) article(w http.ResponseWriter, r *http.Request) {
 		"id": a.ID, "url": a.Url, "title": a.Title, "summary": a.Summary, "published_at": a.PublishedAt,
 		"source": SourceRef{a.SourceCode, a.SourceName, a.SourceKind}, "topics": topics,
 		"classification": json.RawMessage(nullJSON(a.Classification)), "duplicate_of": a.DuplicateOf,
+		"content_level": a.ContentLevel, "updated_at": a.UpdatedAt,
+		"source_completeness": analysis.CompletenessFor(deref(a.ContentLevel)),
 	}
-	if a.SourceKind != "rss" {
-		resp["body"] = a.Body // полный текст храним только для материалов банка и добавленных вручную
+	// Полный текст хранится только для материалов банка, добавленных вручную
+	// новостей и лент, которые сами передают полный текст (full_text_policy = feed).
+	if a.Body != "" {
+		resp["body"] = a.Body
 	}
 	if brief, err := h.Q.GetAnalysis(r.Context(), dbq.GetAnalysisParams{ArticleID: id, UserID: uid, Depth: "brief"}); err == nil {
 		resp["brief"] = AnalysisRef{Method: brief.Method, Depth: brief.Depth, RelevanceScore: brief.RelevanceScore,
@@ -304,6 +308,13 @@ func runView(run dbq.AnalysisRun) map[string]any {
 	return map[string]any{"id": run.ID, "kind": run.Kind, "status": run.Status, "models": run.Models,
 		"prompt_tokens": run.PromptTokens, "completion_tokens": run.CompletionTokens, "steps": json.RawMessage(nullJSON(run.Steps)),
 		"error": run.Error, "started_at": run.StartedAt, "finished_at": run.FinishedAt}
+}
+
+func deref(s *string) string {
+	if s == nil {
+		return ""
+	}
+	return *s
 }
 
 func nullJSON(b []byte) []byte {

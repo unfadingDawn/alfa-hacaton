@@ -195,7 +195,17 @@ SELECT count(*)::int AS total,
        coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'risks', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_risks,
        coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'opportunities', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_opportunities,
        coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'recommended_actions', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_actions,
-       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'validation_notes', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_validation_notes
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'validation_notes', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_validation_notes,
+       -- Фактологическая точность (анализы, выполненные после появления проверки).
+       count(*) FILTER (WHERE result->'insight' ? 'source_coverage')::int AS with_coverage,
+       coalesce(round(avg((result->'insight'->'source_coverage'->>'ratio')::numeric)
+         FILTER (WHERE result->'insight' ? 'source_coverage') * 100), 0)::int AS avg_source_coverage,
+       coalesce(sum((result->'insight'->'fact_check'->>'checked')::int), 0)::int AS checked_values,
+       coalesce(sum(jsonb_array_length(coalesce(result->'insight'->'fact_check'->'unverified', '[]'::jsonb))), 0)::int AS unverified_values,
+       count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'fact_check'->'unverified', '[]'::jsonb)) > 0)::int AS with_unverified,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'full_text')::int AS level_full_text,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'summary')::int AS level_summary,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'title_only')::int AS level_title_only
 FROM fulls;
 
 -- name: UserQualityFeedbackStats :one

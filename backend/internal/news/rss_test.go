@@ -89,3 +89,20 @@ func TestNormalizationForDuplicates(t *testing.T) {
 		t.Fatalf("CleanText: %q", CleanText("<p>a&amp;b</p>\n\n c"))
 	}
 }
+
+func TestParseFullText(t *testing.T) {
+	feed := `<?xml version="1.0" encoding="utf-8"?><rss version="2.0" xmlns:content="http://purl.org/rss/1.0/modules/content/" xmlns:yandex="http://news.yandex.ru">
+<channel><item><title>Пресс-релиз</title><link>https://cbr.ru/1</link><pubDate>Wed, 21 Oct 2026 13:30:00 +0300</pubDate>
+<description>Короткий анонс</description><content:encoded><![CDATA[<p>Полный <b>текст</b> пресс-релиза</p>]]></content:encoded></item>
+<item><title>Новость</title><link>https://example.ru/2</link><pubDate>Wed, 21 Oct 2026 13:30:00 +0300</pubDate>
+<description>Анонс</description><yandex:full-text>Полный текст для Яндекса</yandex:full-text></item>
+<item><title>Без текста</title><link>https://example.ru/3</link><pubDate>Wed, 21 Oct 2026 13:30:00 +0300</pubDate><description>Анонс</description></item>
+</channel></rss>`
+	items, err := Parse([]byte(feed))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if items[0].FullText != "Полный текст пресс-релиза" || items[1].FullText != "Полный текст для Яндекса" || items[2].FullText != "" {
+		t.Fatalf("полный текст из ленты: %q / %q / %q", items[0].FullText, items[1].FullText, items[2].FullText)
+	}
+}
