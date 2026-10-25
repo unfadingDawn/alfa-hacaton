@@ -468,7 +468,16 @@ SELECT count(*)::int AS total,
        count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'fact_check'->'unverified', '[]'::jsonb)) > 0)::int AS with_unverified,
        count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'full_text')::int AS level_full_text,
        count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'summary')::int AS level_summary,
-       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'title_only')::int AS level_title_only
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'title_only')::int AS level_title_only,
+       -- Содержательность: механизм через признаки компании и конкретные действия.
+       count(*) FILTER (WHERE result->'insight' ? 'used_company_factors')::int AS with_factor_field,
+       count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'used_company_factors', '[]'::jsonb)) > 0)::int AS with_company_factors,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'used_company_factors', '[]'::jsonb)))
+         FILTER (WHERE result->'insight' ? 'used_company_factors'), 2), 0)::numeric(10,2) AS avg_company_factors,
+       coalesce(sum((SELECT count(*) FROM jsonb_array_elements(coalesce(result->'insight'->'recommended_actions', '[]'::jsonb)) a
+         WHERE coalesce(a->>'object', '') <> '' AND coalesce(a->>'owner', '') <> '')), 0)::int AS concrete_actions,
+       coalesce(sum((SELECT count(*) FROM jsonb_array_elements(coalesce(result->'insight'->'validation_notes', '[]'::jsonb)) n
+         WHERE n #>> '{}' ILIKE '%общее действие%')), 0)::int AS generic_actions_removed
 FROM fulls
 `
 
@@ -478,23 +487,28 @@ type UserQualityAnalysisStatsParams struct {
 }
 
 type UserQualityAnalysisStatsRow struct {
-	Total              int32   `json:"total"`
-	WithBankView       int32   `json:"with_bank_view"`
-	WithCompanyFacts   int32   `json:"with_company_facts"`
-	Revised            int32   `json:"revised"`
-	AvgSources         float64 `json:"avg_sources"`
-	AvgRisks           float64 `json:"avg_risks"`
-	AvgOpportunities   float64 `json:"avg_opportunities"`
-	AvgActions         float64 `json:"avg_actions"`
-	AvgValidationNotes float64 `json:"avg_validation_notes"`
-	WithCoverage       int32   `json:"with_coverage"`
-	AvgSourceCoverage  int32   `json:"avg_source_coverage"`
-	CheckedValues      int32   `json:"checked_values"`
-	UnverifiedValues   int32   `json:"unverified_values"`
-	WithUnverified     int32   `json:"with_unverified"`
-	LevelFullText      int32   `json:"level_full_text"`
-	LevelSummary       int32   `json:"level_summary"`
-	LevelTitleOnly     int32   `json:"level_title_only"`
+	Total                 int32   `json:"total"`
+	WithBankView          int32   `json:"with_bank_view"`
+	WithCompanyFacts      int32   `json:"with_company_facts"`
+	Revised               int32   `json:"revised"`
+	AvgSources            float64 `json:"avg_sources"`
+	AvgRisks              float64 `json:"avg_risks"`
+	AvgOpportunities      float64 `json:"avg_opportunities"`
+	AvgActions            float64 `json:"avg_actions"`
+	AvgValidationNotes    float64 `json:"avg_validation_notes"`
+	WithCoverage          int32   `json:"with_coverage"`
+	AvgSourceCoverage     int32   `json:"avg_source_coverage"`
+	CheckedValues         int32   `json:"checked_values"`
+	UnverifiedValues      int32   `json:"unverified_values"`
+	WithUnverified        int32   `json:"with_unverified"`
+	LevelFullText         int32   `json:"level_full_text"`
+	LevelSummary          int32   `json:"level_summary"`
+	LevelTitleOnly        int32   `json:"level_title_only"`
+	WithFactorField       int32   `json:"with_factor_field"`
+	WithCompanyFactors    int32   `json:"with_company_factors"`
+	AvgCompanyFactors     float64 `json:"avg_company_factors"`
+	ConcreteActions       int32   `json:"concrete_actions"`
+	GenericActionsRemoved int32   `json:"generic_actions_removed"`
 }
 
 // Grounding и наполненность сохранённых полных анализов.
@@ -519,6 +533,11 @@ func (q *Queries) UserQualityAnalysisStats(ctx context.Context, arg UserQualityA
 		&i.LevelFullText,
 		&i.LevelSummary,
 		&i.LevelTitleOnly,
+		&i.WithFactorField,
+		&i.WithCompanyFactors,
+		&i.AvgCompanyFactors,
+		&i.ConcreteActions,
+		&i.GenericActionsRemoved,
 	)
 	return i, err
 }

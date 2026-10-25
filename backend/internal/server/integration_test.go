@@ -92,7 +92,10 @@ func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
 		"why_it_matters":"У компании есть кредитные продукты (%s)","why_it_matters_source_ids":["C:has_loan"],
 		"potential_impact":"Стоимость долга останется высокой",
 		"risks":[{"title":"Дорогой долг","description":"Нет снижения ставок","likelihood":"high","horizon":"short","basis":"bank_view","source_ids":["%s"]}],
-		"opportunities":[],"recommended_actions":[{"action":"Пересмотреть график рефинансирования","rationale":"","owner":"CFO","source_ids":[]}],
+		"opportunities":[],"recommended_actions":[{"action":"Пересмотреть график рефинансирования","object":"кредитная линия",
+		"rationale":"стоимость долга не снизится","owner":"Финансовый директор","horizon":"short","source_ids":["C:has_loan"]},
+		{"action":"Следить за развитием ситуации","object":"ставка","rationale":"важно","owner":"CFO","horizon":"short","source_ids":[]}],
+		"used_company_factors":[{"fact_id":"C:has_loan","mechanism":"сохранение ставки удерживает стоимость обслуживания кредитов"}],
 		"bank_view":[{"text":"Аналитики ждут паузы","source_ids":["%s","R999999"]}],
 		"assumptions":[],"uncertainty_notes":[]}`, role, rid, rid)
 	case strings.Contains(user, "Новости:"):
@@ -365,6 +368,10 @@ func TestEndToEnd(t *testing.T) {
 	if acc := qall["accuracy"].(map[string]any); acc["analyses_checked"].(float64) != 1 || acc["avg_source_coverage"] == nil ||
 		acc["content_levels"].(map[string]any)["title_only"].(float64) != 1 {
 		t.Fatalf("метрики фактологической точности: %v", acc)
+	}
+	if cnt := qall["content"].(map[string]any); cnt["company_factors_rate"].(float64) != 100 || cnt["generic_actions_removed"].(float64) != 1 ||
+		cnt["concrete_actions"].(float64) != 1 {
+		t.Fatalf("метрики содержательности: %v", cnt)
 	}
 	qq := qall["questions"].(map[string]any)
 	if qq["total"].(float64) != 3 || qq["llm_calls"].(float64) != 2 || qq["deterministic"].(float64) != 1 ||

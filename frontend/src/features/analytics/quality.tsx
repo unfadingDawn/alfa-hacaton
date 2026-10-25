@@ -51,6 +51,14 @@ type Quality = {
     validator_corrections: number;
   };
   feedback: { total: number; positive: number; negative: number; with_comment: number; helpfulness_rate: number | null };
+  content: {
+    analyses_checked: number;
+    with_company_factors: number;
+    company_factors_rate: number | null;
+    avg_company_factors: number;
+    concrete_actions: number;
+    generic_actions_removed: number;
+  };
   accuracy: {
     analyses_checked: number;
     avg_source_coverage: number | null;
@@ -171,6 +179,19 @@ function QualityContent({ data }: { data: Quality }) {
           ]} />
         </Panel>
       </div>
+
+      <Panel title="Содержательность" description="Механизм влияния через признаки компании и конкретность действий">
+        {data.content.analyses_checked === 0 ? (
+          <p className="text-sm text-ink-soft">Метрики появятся для анализов, выполненных после обновления промпта.</p>
+        ) : (
+          <MetricGrid items={[
+            ["С механизмом через признаки", percent(data.content.company_factors_rate)],
+            ["Признаков компании в среднем", data.content.avg_company_factors],
+            ["Конкретных действий", data.content.concrete_actions],
+            ["Удалено общих советов", data.content.generic_actions_removed],
+          ]} />
+        )}
+      </Panel>
 
       <Panel title="Фактологическая точность" description="Сверка чисел, дат и названий с источниками и полнота текста новостей">
         {data.accuracy.analyses_checked === 0 ? (

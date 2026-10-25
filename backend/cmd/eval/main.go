@@ -78,6 +78,14 @@ func main() {
 	fmt.Printf("topics %.3f | score-range %.3f | personalization %.3f | sources %.3f | hallucinations %.3f | JSON %.3f\n",
 		report.Metrics.TopicMatch, report.Metrics.ScoreInRangeRate, report.Metrics.PersonalizationRate,
 		report.Metrics.ValidSourceRate, report.Metrics.HallucinationRate, report.Metrics.JSONSuccessRate)
+	opt := func(v *float64) string {
+		if v == nil {
+			return "—"
+		}
+		return fmt.Sprintf("%.3f", *v)
+	}
+	fmt.Printf("differentiation %s | source coverage %s | unverified values %s\n",
+		opt(report.Metrics.DifferentiationRate), opt(report.Metrics.SourceCoverage), opt(report.Metrics.UnverifiedValueRate))
 	fmt.Printf("avg latency %.0f ms | avg tokens %.0f | avg estimated cost $%.6f\n",
 		report.Metrics.AverageLatencyMS, report.Metrics.AverageTokens, report.Metrics.AverageCostUSD)
 	if *out == "" {

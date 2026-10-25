@@ -298,6 +298,12 @@ func (h *Handler) quality(w http.ResponseWriter, r *http.Request) {
 			"revisions":            steps.Revisions, "revised_analyses": analyses.Revised,
 			"validator_corrections": steps.ValidatorCorrections,
 		},
+		"content": map[string]any{
+			"analyses_checked": analyses.WithFactorField, "with_company_factors": analyses.WithCompanyFactors,
+			"company_factors_rate": qualityPercent(analyses.WithCompanyFactors, analyses.WithFactorField),
+			"avg_company_factors":  analyses.AvgCompanyFactors, "concrete_actions": analyses.ConcreteActions,
+			"generic_actions_removed": analyses.GenericActionsRemoved,
+		},
 		"accuracy": map[string]any{
 			"analyses_checked": analyses.WithCoverage, "avg_source_coverage": nilIfZero(analyses.AvgSourceCoverage, analyses.WithCoverage),
 			"checked_values": analyses.CheckedValues, "unverified_values": analyses.UnverifiedValues,

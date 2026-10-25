@@ -2,6 +2,8 @@ package evaluation
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"math"
@@ -150,7 +152,8 @@ func Run(ctx context.Context, d Dataset, analyzer Analyzer, opts Options) (Repor
 			cr := CaseResult{QueryID: q.ID, ArticleID: j.ArticleID, Mode: analyzer.Mode(), Success: analyzeErr == nil,
 				Score: out.Score, PromptTokens: out.PromptTokens, CompletionTokens: out.CompletionTokens,
 				DurationMS: out.DurationMS, EstimatedCostUSD: out.EstimatedCostUSD,
-				SourceCoverage: out.SourceCoverage, UnverifiedValues: out.UnverifiedValues}
+				SourceCoverage: out.SourceCoverage, UnverifiedValues: out.UnverifiedValues,
+				UsedCompanyFacts: out.UsedCompanyFacts, TextDigest: digest(out.Text)}
 			if analyzeErr != nil {
 				cr.Error = analyzeErr.Error()
 			} else {
@@ -217,4 +220,12 @@ func Compare(report Report, baselinePath string) (Delta, error) {
 		HallucinationRate:   report.Metrics.HallucinationRate - baseline.Metrics.HallucinationRate,
 		JSONSuccessRate:     report.Metrics.JSONSuccessRate - baseline.Metrics.JSONSuccessRate,
 	}, nil
+}
+
+func digest(text string) string {
+	if text == "" {
+		return ""
+	}
+	sum := sha256.Sum256([]byte(text))
+	return hex.EncodeToString(sum[:8])
 }

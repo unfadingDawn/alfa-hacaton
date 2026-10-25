@@ -673,7 +673,8 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, art dbq.GetArticleRow,
 		analysis.ValidateCheck(&chk)
 		// Детерминированная проверка чисел и названий дополняет LLM-контролёра:
 		// неподтверждённое значение — серьёзное замечание и повод для доработки.
-		if issues := analysis.FactCheckIssues(draft); len(issues) > 0 {
+		// То же для содержательности: механизм через признаки компании и конкретные действия.
+		if issues := append(analysis.FactCheckIssues(draft), analysis.ContentIssues(draft)...); len(issues) > 0 {
 			chk.Issues = append(chk.Issues, issues...)
 			chk.Passed = false
 		}
@@ -725,8 +726,9 @@ func (a *Agent) draft(ctx context.Context, main analysis.Evidence, uc *UserConte
 		t.llmStep(name, title, resp, err, start, "", nil)
 		return nil, err
 	}
-	t.llmStep(name, title, resp, nil, start, fmt.Sprintf("релевантность %d, важность %s, рисков %d, возможностей %d, источников %d, исправлений валидатора %d",
-		in.RelevanceScore, in.ImportanceLevel, len(in.Risks), len(in.Opportunities), len(in.EvidenceSources), len(in.Validation)),
+	t.llmStep(name, title, resp, nil, start, fmt.Sprintf("релевантность %d, важность %s, рисков %d, возможностей %d, действий %d, признаков компании %d, источников %d, исправлений валидатора %d",
+		in.RelevanceScore, in.ImportanceLevel, len(in.Risks), len(in.Opportunities), len(in.RecommendedActions), len(in.UsedCompanyFactors),
+		len(in.EvidenceSources), len(in.Validation)),
 		map[string]any{"validation_notes": in.Validation})
 	if in.FactCheck != nil {
 		t.toolStep("fact_check_"+name, "Проверка чисел, дат и названий", time.Now(),

@@ -245,10 +245,18 @@ func DeterministicAnswer(code string, c QAContext, exposures []ExposureRef) (*An
 	case "company_factors":
 		a := &Answer{}
 		used := map[string]bool{}
+		mech := map[string]string{}
+		for _, f := range in.UsedCompanyFactors {
+			mech[f.FactID] = f.Mechanism
+		}
 		for _, e := range in.EvidenceSources {
 			if e.Type == "company_data" {
 				used[e.ID] = true
-				a.Points = append(a.Points, AnswerPoint{Text: e.Title + ": " + e.Excerpt, SourceIDs: []string{e.ID}, Basis: "company_data"})
+				text := e.Title + ": " + e.Excerpt
+				if m := mech[e.ID]; m != "" {
+					text += ". Механизм влияния: " + m
+				}
+				a.Points = append(a.Points, AnswerPoint{Text: text, SourceIDs: []string{e.ID}, Basis: "company_data"})
 			}
 		}
 		nUsed := len(a.Points)

@@ -290,6 +290,24 @@ function AnalysisBody({
             {insight.why_it_matters}
             <SourceChips ids={insight.why_it_matters_source_ids} evidence={evidence} />
           </p>
+          {insight.used_company_factors && insight.used_company_factors.length > 0 && (
+            <div className="mt-5 border-t border-line pt-4">
+              <h3 className="text-[15px] font-semibold">Через какие признаки компании</h3>
+              <ul className="mt-2 space-y-2">
+                {insight.used_company_factors.map((f) => (
+                  <li key={f.fact_id} className="flex gap-2.5 text-[14px] leading-relaxed">
+                    <span className="shrink-0 self-start">
+                      <SourceChips ids={[f.fact_id]} evidence={evidence} />
+                    </span>
+                    <span>
+                      {evidence.get(f.fact_id) && <span className="font-medium">{evidence.get(f.fact_id)!.title}: </span>}
+                      <span className="text-ink-soft">{f.mechanism}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {insight.potential_impact && (
             <div className="mt-5 border-t border-line pt-4">
               <div className="flex items-center gap-2">
@@ -306,7 +324,7 @@ function AnalysisBody({
           <RiskList title="Возможности" items={insight.opportunities} tone="chance" evidence={evidence} empty="Возможностей не выявлено." />
         </div>
 
-        <Panel title="Рекомендуемые действия" description="Направления для решения и вопросы для проверки">
+        <Panel title="Рекомендуемые действия" description="Что сделать, с чем, кто отвечает и в какой срок">
           {insight.recommended_actions.length === 0 ? (
             <p className="text-sm text-ink-soft">Модель не предложила действий для этой новости.</p>
           ) : (
@@ -317,8 +335,17 @@ function AnalysisBody({
                     {x.action}
                     <SourceChips ids={x.source_ids} evidence={evidence} />
                   </p>
-                  {x.rationale && <p className="mt-1 text-[14px] text-ink-soft">{x.rationale}</p>}
-                  {x.owner && <p className="mt-1 text-[12px] text-silver">Ответственный: {x.owner}</p>}
+                  {x.rationale && (
+                    <p className="mt-1 text-[14px] text-ink-soft">
+                      <span className="text-silver">Почему: </span>
+                      {x.rationale}
+                    </p>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {x.object && <Badge tone="neutral" title="Объект действия">{x.object}</Badge>}
+                    {x.owner && <Badge tone="outline" title="Ответственный">{x.owner}</Badge>}
+                    {x.horizon && <Badge tone="outline" title="Горизонт">{horizonLabel[x.horizon]}</Badge>}
+                  </div>
                 </li>
               ))}
             </ul>

@@ -25,6 +25,9 @@ func TestHoldoutDatasetAndOfflineEvaluation(t *testing.T) {
 	if report.Mode != "mock" || len(report.Ranking) != len(d.Queries) || len(report.Cases) == 0 {
 		t.Fatalf("неполный report: %+v", report)
 	}
+	if d := report.Metrics.DifferentiationRate; d == nil || *d < 0.8 {
+		t.Fatalf("одна новость для разных компаний и ролей должна давать разный результат: %v", d)
+	}
 	if report.Duplicates == 0 {
 		t.Fatal("holdout должен проверять исключение дублей")
 	}

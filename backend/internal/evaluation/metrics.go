@@ -60,6 +60,8 @@ type CaseResult struct {
 	EstimatedCostUSD   float64  `json:"estimated_cost_usd"`
 	SourceCoverage     *float64 `json:"source_coverage,omitempty"`
 	UnverifiedValues   int      `json:"unverified_values"`
+	UsedCompanyFacts   []string `json:"used_company_facts,omitempty"`
+	TextDigest         string   `json:"text_digest,omitempty"`
 }
 
 type Metrics struct {
@@ -80,6 +82,9 @@ type Metrics struct {
 	// где выполнялся полный анализ) и доля кейсов с неподтверждёнными значениями.
 	SourceCoverage      *float64 `json:"source_coverage,omitempty"`
 	UnverifiedValueRate *float64 `json:"unverified_value_rate,omitempty"`
+	// Доля пар кейсов «одна новость — разные компании/роли», в которых
+	// результат различается (оценка, использованные признаки или текст).
+	DifferentiationRate *float64 `json:"differentiation_rate,omitempty"`
 }
 
 type Report struct {
@@ -192,6 +197,28 @@ func aggregate(report *Report) {
 				unverified++
 			}
 		}
+	}
+	byArticle := map[string][]CaseResult{}
+	for _, c := range report.Cases {
+		if c.Success {
+			byArticle[c.ArticleID] = append(byArticle[c.ArticleID], c)
+		}
+	}
+	pairs, differ := 0, 0
+	for _, cs := range byArticle {
+		for i := range cs {
+			for j := i + 1; j < len(cs); j++ {
+				pairs++
+				a, b := cs[i], cs[j]
+				if a.Score != b.Score || strings.Join(a.UsedCompanyFacts, ",") != strings.Join(b.UsedCompanyFacts, ",") || a.TextDigest != b.TextDigest {
+					differ++
+				}
+			}
+		}
+	}
+	if pairs > 0 {
+		rate := float64(differ) / float64(pairs)
+		report.Metrics.DifferentiationRate = &rate
 	}
 	if covN > 0 {
 		cov, rate := covSum/float64(covN), float64(unverified)/float64(covN)

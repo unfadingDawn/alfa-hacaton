@@ -650,7 +650,22 @@ components:
         potential_impact: {type: string}
         risks: {type: array, items: {$ref: '#/components/schemas/RiskOpp'}}
         opportunities: {type: array, items: {$ref: '#/components/schemas/RiskOpp'}}
-        recommended_actions: {type: array, items: {type: object, properties: {action: {type: string}, rationale: {type: string}, owner: {type: string}, source_ids: {type: array, items: {type: string}}}}}
+        recommended_actions:
+          type: array
+          description: Только конкретные действия. Общие советы («следить за развитием ситуации») и действия без объекта или причины удаляются валидатором.
+          items:
+            type: object
+            properties:
+              action: {type: string}
+              object: {type: string, description: 'Что именно: договор, кредитная линия, закупка, статья бюджета'}
+              owner: {type: string, description: Роль или подразделение}
+              horizon: {type: string, enum: [short, medium, long]}
+              rationale: {type: string}
+              source_ids: {type: array, items: {type: string}}
+        used_company_factors:
+          type: array
+          description: Признаки компании (C:…), повлиявшие на вывод, и механизм влияния
+          items: {type: object, properties: {fact_id: {type: string, example: 'C:has_loan'}, mechanism: {type: string}}}
         bank_view: {type: array, items: {type: object, properties: {text: {type: string}, source_ids: {type: array, items: {type: string}}}}}
         assumptions: {type: array, items: {type: string}}
         uncertainty_notes: {type: array, items: {type: string}}

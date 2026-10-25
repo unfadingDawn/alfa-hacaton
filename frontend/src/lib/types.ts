@@ -196,7 +196,15 @@ export type Insight = {
   potential_impact: string;
   risks: RiskOpp[];
   opportunities: RiskOpp[];
-  recommended_actions: { action: string; rationale: string; owner: string; source_ids: string[] }[];
+  recommended_actions: {
+    action: string;
+    object?: string;
+    owner: string;
+    horizon?: "short" | "medium" | "long";
+    rationale: string;
+    source_ids: string[];
+  }[];
+  used_company_factors?: { fact_id: string; mechanism: string }[];
   bank_view: Claim[];
   assumptions: string[];
   uncertainty_notes: string[];
