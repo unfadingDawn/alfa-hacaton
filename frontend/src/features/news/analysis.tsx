@@ -3,7 +3,7 @@
 import Link from "next/link";
 import { useEffect, useState } from "react";
 import { AnimatePresence, motion } from "motion/react";
-import { ArrowLeft, Check, CircleAlert, ExternalLink, Loader2, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
+import { ArrowLeft, Check, CircleAlert, Loader2, RotateCcw, Sparkles, ThumbsDown, ThumbsUp } from "lucide-react";
 import { toast } from "sonner";
 import { useMe } from "@/components/app-shell";
 import { Button } from "@/components/ui/button";
@@ -15,6 +15,11 @@ import { formatDate, horizonLabel, impactLabel, likelihoodLabel } from "@/lib/fo
 import type { ArticleDetail, Evidence, FullAnalysis, Insight, RiskOpp, Run } from "@/lib/types";
 import { useApi } from "@/lib/use-api";
 import { cn } from "@/lib/utils";
+import { AccuracyStrip, CompletenessBadge, FactCheckPanel } from "./accuracy";
+import { EvidenceItem, SourceChips } from "./evidence";
+import { AnalyzingMark } from "./analyzing";
+import { AskAnalysis } from "./questions";
+import { AgentTrace } from "./trace";
 import { ImportanceBadge, MethodTag, RelevanceMeter, SaveButton, ShareButton, SourceLine, WhyItMatters, impactTone } from "./parts";
 
 const basisMeta = {
@@ -59,7 +64,7 @@ export function ArticleView({ id }: { id: string }) {
 
 function Article({ a, onAnalyzed }: { a: ArticleDetail; onAnalyzed: (x: FullAnalysis, run?: Run) => void }) {
   const insight = a.analysis?.result?.insight;
-  const showBody = a.body && a.source.kind !== "rss";
+  const showBody = !!a.body;
   return (
     <div>
       <Link href="/feed" className="inline-flex items-center gap-1.5 text-[13px] text-ink-soft hover:text-ink">
@@ -78,6 +83,8 @@ function Article({ a, onAnalyzed }: { a: ArticleDetail; onAnalyzed: (x: FullAnal
           ))}
           <SaveButton id={a.id} saved={a.is_saved} />
           <ShareButton id={a.id} title={a.title} url={a.url} withLabel />
+          <CompletenessBadge c={a.source_completeness} />
+          {a.updated_at && <Badge tone="outline" title="Источник изменил текст публикации; анализ строится по актуальной версии">Обновлено {formatDate(a.updated_at)}</Badge>}
           {a.source.kind === "user_submitted" && <Badge tone="mixed">Добавлено вручную, достоверность не проверена</Badge>}
         </div>
       </header>
@@ -177,14 +184,36 @@ function RunAnalysis({ a, onDone }: { a: ArticleDetail; onDone: (x: FullAnalysis
             <WhyItMatters a={a.brief} />
           </div>
         )}
-        <p className="max-w-[60ch] text-[15px] leading-relaxed text-ink-soft">
-          Агент составит план, найдёт подтверждения в аналитике Альфа-Банка и связанных новостях, сформулирует последствия для
-          вашей роли и проверит каждый вывод по источникам. Обычно это 4–5 запросов к модели и до минуты ожидания.
-        </p>
-        {err && <AnalyzeError err={err} />}
-        <Button size="lg" className="mt-5" onClick={run} loading={busy}>
-          {!busy && <Sparkles />} {busy ? "Анализ выполняется" : "Запустить анализ"}
-        </Button>
+        {busy ? (
+          <div className="flex flex-col items-center py-6 text-center" role="status" aria-live="polite">
+            <AnalyzingMark size={176} />
+            <p className="mt-6 text-[17px] font-semibold tracking-[-0.01em]">Анализ выполняется</p>
+            <AnimatePresence mode="wait">
+              <motion.p
+                key={stepIdx}
+                initial={{ opacity: 0, y: 6 }}
+                animate={{ opacity: 1, y: 0 }}
+                exit={{ opacity: 0, y: -6 }}
+                transition={{ duration: 0.25 }}
+                className="mt-1 text-[14px] text-ink-soft"
+              >
+                {plannedSteps[stepIdx]}…
+              </motion.p>
+            </AnimatePresence>
+            <p className="mt-3 text-[12px] text-silver">Обычно до минуты. Можно не закрывать страницу — результат сохранится.</p>
+          </div>
+        ) : (
+          <>
+            <p className="max-w-[60ch] text-[15px] leading-relaxed text-ink-soft">
+              Агент составит план, найдёт подтверждения в аналитике Альфа-Банка и связанных новостях, сформулирует последствия для
+              вашей роли и проверит каждый вывод по источникам. Обычно это 4–5 запросов к модели и до минуты ожидания.
+            </p>
+            {err && <AnalyzeError err={err} />}
+            <Button size="lg" className="mt-5" onClick={run}>
+              <Sparkles /> Запустить анализ
+            </Button>
+          </>
+        )}
       </Panel>
       <Panel title="Как строится вывод">
         <ol className="space-y-2.5" aria-live="polite">
@@ -232,30 +261,6 @@ function AnalyzeError({ err }: { err: ApiError }) {
   );
 }
 
-function SourceChips({ ids, evidence }: { ids: string[]; evidence: Map<string, Evidence> }) {
-  if (!ids?.length) return null;
-  return (
-    <span className="ml-1 inline-flex flex-wrap gap-1 align-middle">
-      {ids.map((id) => {
-        const e = evidence.get(id);
-        return (
-          <a
-            key={id}
-            href={`#ev-${id}`}
-            title={e ? e.title : id}
-            className={cn(
-              "rounded-[6px] px-1.5 py-px text-[11px] font-medium tabular hover:underline",
-              id.startsWith("R") ? "bg-bankview-bg text-bankview" : id.startsWith("C:") ? "bg-frost text-ink-soft" : "bg-white text-ink ring-1 ring-line",
-            )}
-          >
-            {id}
-          </a>
-        );
-      })}
-    </span>
-  );
-}
-
 function BasisTag({ basis }: { basis: RiskOpp["basis"] }) {
   const m = basisMeta[basis];
   return <Badge tone={m.tone}>{m.label}</Badge>;
@@ -278,6 +283,7 @@ function AnalysisBody({
   return (
     <div className="mt-6 grid gap-6 xl:grid-cols-[minmax(0,1fr)_360px]">
       <div className="space-y-6">
+        <AccuracyStrip insight={insight} />
         <div className="flex flex-wrap items-center gap-3 text-[12px] text-ink-soft">
           <span>Обозначения:</span>
           <Badge tone="neutral">Факт из новости</Badge>
@@ -308,6 +314,24 @@ function AnalysisBody({
             {insight.why_it_matters}
             <SourceChips ids={insight.why_it_matters_source_ids} evidence={evidence} />
           </p>
+          {insight.used_company_factors && insight.used_company_factors.length > 0 && (
+            <div className="mt-5 border-t border-line pt-4">
+              <h3 className="text-[15px] font-semibold">Через какие признаки компании</h3>
+              <ul className="mt-2 space-y-2">
+                {insight.used_company_factors.map((f) => (
+                  <li key={f.fact_id} className="flex gap-2.5 text-[14px] leading-relaxed">
+                    <span className="shrink-0 self-start">
+                      <SourceChips ids={[f.fact_id]} evidence={evidence} />
+                    </span>
+                    <span>
+                      {evidence.get(f.fact_id) && <span className="font-medium">{evidence.get(f.fact_id)!.title}: </span>}
+                      <span className="text-ink-soft">{f.mechanism}</span>
+                    </span>
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
           {insight.potential_impact && (
             <div className="mt-5 border-t border-line pt-4">
               <div className="flex items-center gap-2">
@@ -324,7 +348,7 @@ function AnalysisBody({
           <RiskList title="Возможности" items={insight.opportunities} tone="chance" evidence={evidence} empty="Возможностей не выявлено." />
         </div>
 
-        <Panel title="Рекомендуемые действия" description="Направления для решения и вопросы для проверки">
+        <Panel title="Рекомендуемые действия" description="Что сделать, с чем, кто отвечает и в какой срок">
           {insight.recommended_actions.length === 0 ? (
             <p className="text-sm text-ink-soft">Модель не предложила действий для этой новости.</p>
           ) : (
@@ -335,8 +359,17 @@ function AnalysisBody({
                     {x.action}
                     <SourceChips ids={x.source_ids} evidence={evidence} />
                   </p>
-                  {x.rationale && <p className="mt-1 text-[14px] text-ink-soft">{x.rationale}</p>}
-                  {x.owner && <p className="mt-1 text-[12px] text-silver">Ответственный: {x.owner}</p>}
+                  {x.rationale && (
+                    <p className="mt-1 text-[14px] text-ink-soft">
+                      <span className="text-silver">Почему: </span>
+                      {x.rationale}
+                    </p>
+                  )}
+                  <div className="mt-2 flex flex-wrap gap-1.5">
+                    {x.object && <Badge tone="neutral" title="Объект действия">{x.object}</Badge>}
+                    {x.owner && <Badge tone="outline" title="Ответственный">{x.owner}</Badge>}
+                    {x.horizon && <Badge tone="outline" title="Горизонт">{horizonLabel[x.horizon]}</Badge>}
+                  </div>
                 </li>
               ))}
             </ul>
@@ -358,6 +391,27 @@ function AnalysisBody({
           )}
         </Panel>
 
+        {(insight.assumptions.length > 0 || insight.uncertainty_notes.length > 0) && (
+          <Panel title="Допущения и ограничения" description="Что не подтверждено данными и чего не хватает для точного вывода">
+            <ul className="space-y-2 text-[14px] leading-relaxed text-ink-soft">
+              {insight.assumptions.map((x, i) => (
+                <li key={`a${i}`} className="flex gap-2.5">
+                  <Badge tone="outline" className="shrink-0 whitespace-nowrap self-start">Допущение</Badge>
+                  <span>{x}</span>
+                </li>
+              ))}
+              {insight.uncertainty_notes.map((x, i) => (
+                <li key={`u${i}`} className="flex gap-2.5">
+                  <Badge tone="neutral" className="shrink-0 whitespace-nowrap self-start">Ограничение</Badge>
+                  <span>{x}</span>
+                </li>
+              ))}
+            </ul>
+          </Panel>
+        )}
+
+        <AskAnalysis key={analysis.id + analysis.created_at} articleId={article.id} analysisId={analysis.id} />
+        <AgentTrace analysis={analysis} insight={insight} run={run} evidence={evidence} />
         <Feedback article={article} />
         <Disclaimer />
       </div>
@@ -370,7 +424,7 @@ function AnalysisBody({
             ))}
           </ul>
         </Panel>
-        {run && <Trace run={run} />}
+        <FactCheckPanel insight={insight} />
         <Rerun articleId={article.id} createdAt={analysis.created_at} onDone={onRerun} />
       </aside>
     </div>
@@ -423,92 +477,6 @@ function RiskList({
           ))}
         </ul>
       )}
-    </Panel>
-  );
-}
-
-const evType = { article: "Новость", related_news: "Связанная новость", bank_research: "Аналитика Альфа-Банка", company_data: "Данные о компании" };
-
-function EvidenceItem({ e }: { e: Evidence }) {
-  const href =
-    e.type === "bank_research" && e.url ? `${e.url}#c${e.id.slice(1)}` : e.url && e.url.startsWith("http") ? e.url : undefined;
-  return (
-    <li id={`ev-${e.id}`} className="scroll-mt-24 rounded-[12px] p-2 -m-2 target:bg-glacier/30">
-      <div className="flex items-center gap-2">
-        <span className="rounded-[6px] bg-frost px-1.5 py-px text-[11px] font-medium text-ink-soft tabular">{e.id}</span>
-        <span className="text-[12px] text-silver">{evType[e.type]}</span>
-      </div>
-      <p className="mt-1 text-[14px] font-medium leading-snug">
-        {href ? (
-          <a
-            href={href}
-            target={href.startsWith("http") ? "_blank" : undefined}
-            rel="noopener noreferrer"
-            className="hover:text-steel hover:underline"
-          >
-            {e.title}
-            {href.startsWith("http") && <ExternalLink className="ml-1 inline size-3" aria-hidden />}
-          </a>
-        ) : (
-          e.title
-        )}
-      </p>
-      <p className="mt-0.5 line-clamp-3 text-[13px] text-ink-soft">{e.excerpt}</p>
-      {(e.date || e.note) && (
-        <p className="mt-0.5 text-[12px] text-silver">
-          {e.date && formatDate(e.date)}
-          {e.date && e.note ? ", " : ""}
-          {e.note}
-        </p>
-      )}
-    </li>
-  );
-}
-
-function Trace({ run }: { run: Run }) {
-  const [open, setOpen] = useState(false);
-  const steps = run.steps ?? [];
-  const tokens = run.prompt_tokens + run.completion_tokens;
-  return (
-    <Panel
-      title="Трасса агента"
-      description={`${steps.length} шагов, ${tokens.toLocaleString("ru-RU")} токенов`}
-      action={
-        <Button variant="link" size="sm" onClick={() => setOpen(!open)} aria-expanded={open}>
-          {open ? "Свернуть" : "Показать"}
-        </Button>
-      }
-    >
-      <AnimatePresence initial={false}>
-        {open && (
-          <motion.ol
-            initial={{ height: 0, opacity: 0 }}
-            animate={{ height: "auto", opacity: 1 }}
-            exit={{ height: 0, opacity: 0 }}
-            className="space-y-3 overflow-hidden"
-          >
-            {steps.map((s, i) => (
-              <li key={i} className="text-[13px]">
-                <div className="flex items-center justify-between gap-2">
-                  <span className={cn("font-medium", s.status === "error" && "text-risk")}>
-                    {i + 1}. {s.title}
-                  </span>
-                  <span className="text-silver tabular">{(s.duration_ms / 1000).toFixed(1)} с</span>
-                </div>
-                <p className="text-ink-soft">{s.summary}</p>
-                {s.model && (
-                  <p className="text-silver">
-                    {s.model}
-                    {s.tokens ? `, ${s.tokens} токенов` : ""}
-                    {s.cached ? ", из кэша" : ""}
-                  </p>
-                )}
-              </li>
-            ))}
-            <li className="text-[12px] text-silver">Модели: {run.models.join(", ") || "нет"}</li>
-          </motion.ol>
-        )}
-      </AnimatePresence>
     </Panel>
   );
 }

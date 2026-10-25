@@ -6,7 +6,7 @@ info:
     Персональная новостная аналитика для руководителей бизнеса.
     Авторизация — JWT в HttpOnly cookie `ai_access` (15 мин) и refresh-токен в `ai_refresh`.
     Все ошибки возвращаются в формате `{"error": {"code", "message", "fields"}}`.
-    Запросы к языковой модели выполняются только эндпоинтами `POST /articles/{id}/analyze` и `POST /feed/rank`.
+    Запросы к языковой модели выполняются только эндпоинтами `POST /articles/{id}/analyze`, `POST /feed/rank` и `POST /articles/{id}/analysis/questions` (для свободных вопросов).
 servers:
   - url: /api
 security:
@@ -292,6 +292,9 @@ paths:
     get:
       tags: [news]
       summary: Новость, темы, классификация, оценки и сохранённый анализ с трассой
+      description: |
+        content_level — полнота текста (title_only | summary | full_text), updated_at — когда источник
+        обновил публикацию по тому же URL, body — полный текст, если его разрешено хранить.
       parameters: [{$ref: '#/components/parameters/ArticleID'}]
       responses:
         '200': {description: OK}
@@ -315,12 +318,137 @@ paths:
                 type: object
                 properties:
                   cached: {type: boolean}
-                  analysis: {type: object, properties: {result: {type: object, properties: {insight: {$ref: '#/components/schemas/Insight'}}}}}
+                  analysis:
+                    type: object
+                    properties:
+                      result:
+                        type: object
+                        properties:
+                          insight: {$ref: '#/components/schemas/Insight'}
+                          plan: {type: object, description: 'Вопросы, гипотезы, поисковые запросы и признаки компании для проверки'}
+                          sources_report:
+                            type: object
+                            description: Найденные источники, их использование по разделам и запросы без результатов
+                            properties:
+                              sources: {type: array, items: {type: object, properties: {id: {type: string}, type: {type: string}, title: {type: string}, page: {type: integer}, query: {type: string}, used: {type: boolean}, sections: {type: array, items: {type: string}}}}}
+                              empty_queries: {type: array, items: {type: object}}
+                              queries: {type: array, items: {type: object, properties: {tool: {type: string}, query: {type: string}, stage: {type: string, enum: [plan, self_check]}, found_ids: {type: array, items: {type: string}}}}}
+                              company_facts_total: {type: integer}
+                          revision:
+                            type: object
+                            description: Итог самопроверки и что изменилось после доработки
+                            properties:
+                              applied: {type: boolean}
+                              issues: {type: array, items: {type: object, properties: {path: {type: string}, problem: {type: string}, severity: {type: string, enum: [low, high]}}}}
+                              changes: {type: array, items: {type: string}}
+                              note: {type: string}
                   run: {$ref: '#/components/schemas/Run'}
         '409': {$ref: '#/components/responses/Error'}
         '429': {$ref: '#/components/responses/Error'}
         '502': {$ref: '#/components/responses/Error'}
         '503': {$ref: '#/components/responses/Error'}
+  /articles/{id}/analysis/questions:
+    get:
+      tags: [analysis]
+      summary: История уточняющих вопросов к анализу текущего пользователя, лимиты и быстрые вопросы
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  analysis_id: {type: string, format: uuid}
+                  items: {type: array, items: {$ref: '#/components/schemas/AnalysisQuestion'}}
+                  limits: {$ref: '#/components/schemas/QuestionLimits'}
+                  quick_questions:
+                    type: array
+                    items: {type: object, properties: {code: {type: string}, text: {type: string}, deterministic: {type: boolean}}}
+        '409': {$ref: '#/components/responses/Error'}
+    post:
+      tags: [analysis]
+      summary: Уточняющий вопрос к готовому анализу
+      description: |
+        Ответ строится только по сохранённому анализу пользователя и его реестру источников
+        (новость A1, связанные новости N…, материалы банка R…, факты компании C:…).
+        Быстрые вопросы company_factors и confirmed_only отвечаются без модели. Одинаковые вопросы
+        к той же версии анализа берутся из кэша. Лимиты: ANALYSIS_QUESTIONS_PER_ANALYSIS и
+        ANALYSIS_QUESTIONS_PER_USER_DAILY (только реальные обращения к модели).
+      parameters: [{$ref: '#/components/parameters/ArticleID'}]
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                question: {type: string, minLength: 3, maxLength: 500}
+                preset: {type: string, enum: [why_score, company_factors, check_first, confirmed_only]}
+                analysis_id: {type: string, format: uuid, description: Защита от вопроса к пересчитанному анализу}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  item: {$ref: '#/components/schemas/AnalysisQuestion'}
+                  cached: {type: boolean}
+                  limits: {$ref: '#/components/schemas/QuestionLimits'}
+        '409': {description: 'no_analysis — анализа нет; stale_analysis — анализ пересчитан', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '422': {$ref: '#/components/responses/Validation'}
+        '429': {description: 'question_limit или лимиты модели', content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}}
+        '502': {$ref: '#/components/responses/Error'}
+  /support/assistant:
+    get:
+      tags: [support]
+      summary: История вопросов ИИ-помощнику, частые вопросы и остаток лимита
+      responses: {'200': {description: OK}}
+    post:
+      tags: [support]
+      summary: Вопрос ИИ-помощнику о работе сервиса
+      description: |
+        Частые вопросы (preset) отвечаются статьёй справки без модели. Свой вопрос — моделью по найденным
+        статьям справки с проверкой: удаляются шаги без опоры, несуществующие разделы, кнопки и адреса;
+        при слабой опоре на справку ответ заменяется статьёй (method=fallback). Вопросы вне темы получают
+        фиксированный ответ.
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                question: {type: string, minLength: 3, maxLength: 500}
+                preset: {type: string, enum: [run_analysis, change_role, read_labels, accuracy]}
+      responses:
+        '200':
+          description: OK
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  cached: {type: boolean}
+                  left_today: {type: integer, nullable: true}
+                  item:
+                    type: object
+                    properties:
+                      method: {type: string, enum: [kb, llm, fallback]}
+                      answer:
+                        type: object
+                        properties:
+                          answer: {type: string}
+                          points: {type: array, items: {type: object, properties: {text: {type: string}, source_ids: {type: array, items: {type: string}}}}}
+                          not_in_kb: {type: boolean}
+                          out_of_scope: {type: boolean}
+                          sources: {type: array, items: {type: object, properties: {id: {type: string}, title: {type: string}, link: {type: string}}}}
+                          checks: {type: object, properties: {grounding: {type: number}, unknown_ui: {type: array, items: {type: string}}, unknown_routes: {type: array, items: {type: string}}, rejected: {type: boolean}, notes: {type: array, items: {type: string}}}}
+        '422': {$ref: '#/components/responses/Validation'}
+        '429': {$ref: '#/components/responses/Error'}
   /articles/{id}/save:
     post:
       tags: [news]
@@ -372,6 +500,15 @@ paths:
         Новость «касается компании», если её оценка не ниже min_score.
       parameters: [{name: period, in: query, schema: {type: string, enum: [7d, 30d, 90d, 180d, 365d], default: 365d}}]
       responses: {'200': {description: OK}}
+  /analytics/quality:
+    get:
+      tags: [analytics]
+      summary: Мониторинг качества AI текущего пользователя
+      description: |
+        Агрегирует сохранённые трассы агента, токены, ошибки, grounding, самопроверку и feedback.
+        Не вызывает языковую модель и не возвращает данные других пользователей.
+      parameters: [{name: period, in: query, schema: {type: string, enum: [7d, 30d, 90d], default: 30d}}]
+      responses: {'200': {description: OK}}
   /public/showcase:
     get:
       tags: [analytics]
@@ -398,6 +535,44 @@ components:
       description: Ошибка валидации полей
       content: {application/json: {schema: {$ref: '#/components/schemas/Error'}}}
   schemas:
+    QuestionLimits:
+      type: object
+      properties:
+        per_analysis: {type: integer}
+        used_for_analysis: {type: integer}
+        per_user_daily: {type: integer}
+        used_today: {type: integer}
+    AnalysisQuestion:
+      type: object
+      properties:
+        id: {type: string, format: uuid}
+        question: {type: string}
+        preset: {type: string, nullable: true}
+        method: {type: string, enum: [llm, deterministic]}
+        answer:
+          type: object
+          properties:
+            answer: {type: string}
+            points:
+              type: array
+              items:
+                type: object
+                properties:
+                  text: {type: string}
+                  source_ids: {type: array, items: {type: string}}
+                  basis: {type: string, enum: [fact, bank_view, company_data, model_inference]}
+            not_in_sources: {type: string}
+            out_of_scope: {type: boolean}
+            sources: {type: array, items: {$ref: '#/components/schemas/Evidence'}}
+            validation_notes: {type: array, items: {type: string}}
+        source_ids: {type: array, items: {type: string}}
+        model: {type: string}
+        prompt_version: {type: string}
+        tokens: {type: integer}
+        duration_ms: {type: integer}
+        cached: {type: boolean}
+        outdated: {type: boolean, description: Вопрос задан к предыдущей версии анализа}
+        created_at: {type: string, format: date-time}
     Error:
       type: object
       properties:
@@ -545,12 +720,56 @@ components:
         potential_impact: {type: string}
         risks: {type: array, items: {$ref: '#/components/schemas/RiskOpp'}}
         opportunities: {type: array, items: {$ref: '#/components/schemas/RiskOpp'}}
-        recommended_actions: {type: array, items: {type: object, properties: {action: {type: string}, rationale: {type: string}, owner: {type: string}, source_ids: {type: array, items: {type: string}}}}}
+        recommended_actions:
+          type: array
+          description: Только конкретные действия. Общие советы («следить за развитием ситуации») и действия без объекта или причины удаляются валидатором.
+          items:
+            type: object
+            properties:
+              action: {type: string}
+              object: {type: string, description: 'Что именно: договор, кредитная линия, закупка, статья бюджета'}
+              owner: {type: string, description: Роль или подразделение}
+              horizon: {type: string, enum: [short, medium, long]}
+              rationale: {type: string}
+              source_ids: {type: array, items: {type: string}}
+        used_company_factors:
+          type: array
+          description: Признаки компании (C:…), повлиявшие на вывод, и механизм влияния
+          items: {type: object, properties: {fact_id: {type: string, example: 'C:has_loan'}, mechanism: {type: string}}}
         bank_view: {type: array, items: {type: object, properties: {text: {type: string}, source_ids: {type: array, items: {type: string}}}}}
         assumptions: {type: array, items: {type: string}}
         uncertainty_notes: {type: array, items: {type: string}}
         evidence_sources: {type: array, items: {$ref: '#/components/schemas/Evidence'}}
         validation_notes: {type: array, items: {type: string}}
+        fact_check:
+          type: object
+          description: Заполняет backend. Проценты, суммы, сроки, даты и названия из анализа, сверенные с реестром источников.
+          properties:
+            checked: {type: integer}
+            verified: {type: integer}
+            unverified:
+              type: array
+              items:
+                type: object
+                properties:
+                  path: {type: string, example: 'risks[0]'}
+                  kind: {type: string, enum: [percent, money, term, date, year, entity]}
+                  value: {type: string}
+                  claim: {type: string}
+                  action: {type: string, enum: [removed, marked], description: 'removed — факт или позиция банка удалены; marked — значение помечено'}
+        source_coverage:
+          type: object
+          description: Подтверждённые источниками утверждения / все значимые утверждения.
+          properties:
+            confirmed: {type: integer}
+            total: {type: integer}
+            ratio: {type: number, minimum: 0, maximum: 1}
+        source_completeness:
+          type: object
+          properties:
+            level: {type: string, enum: [title_only, summary, full_text]}
+            label: {type: string}
+            note: {type: string}
     Run:
       type: object
       properties:

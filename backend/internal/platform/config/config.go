@@ -24,7 +24,13 @@ type LLM struct {
 	MaxOutputTokens  int
 	MaxInputChars    int
 	PerUserHourly    int
-	JSONMode         bool
+	// Уточняющие вопросы к готовому анализу: обращения к модели на один
+	// анализ и на пользователя за последние 24 часа (кэш и ответы без модели не считаются).
+	QuestionsPerAnalysis  int
+	QuestionsPerUserDaily int
+	// Вопросы к ИИ-помощнику поддержки за 24 часа (частые вопросы и кэш не считаются).
+	SupportPerUserDaily int
+	JSONMode            bool
 }
 
 type Semantic struct {
@@ -77,19 +83,22 @@ func Load() (Config, error) {
 			RefreshInterval: envDuration("SEMANTIC_REFRESH_INTERVAL", 30*time.Minute),
 		},
 		LLM: LLM{
-			BaseURL:          strings.TrimRight(env("LLM_BASE_URL", ""), "/"),
-			APIKey:           env("LLM_API_KEY", ""),
-			ModelFast:        env("LLM_MODEL_FAST", ""),
-			ModelReasoning:   env("LLM_MODEL_REASONING", ""),
-			ModelWriter:      env("LLM_MODEL_WRITER", ""),
-			Timeout:          envDuration("LLM_TIMEOUT", 90*time.Second),
-			DailyTokenBudget: int64(envInt("LLM_DAILY_TOKEN_BUDGET", 300_000)),
-			DailyCallLimit:   envInt("LLM_DAILY_CALL_LIMIT", 80),
-			PerMinuteLimit:   envInt("LLM_PER_MINUTE_LIMIT", 6),
-			MaxOutputTokens:  envInt("LLM_MAX_OUTPUT_TOKENS", 3500),
-			MaxInputChars:    envInt("LLM_MAX_INPUT_CHARS", 24000),
-			PerUserHourly:    envInt("ANALYZE_PER_USER_HOURLY", 10),
-			JSONMode:         envBool("LLM_JSON_MODE", true),
+			BaseURL:               strings.TrimRight(env("LLM_BASE_URL", ""), "/"),
+			APIKey:                env("LLM_API_KEY", ""),
+			ModelFast:             env("LLM_MODEL_FAST", ""),
+			ModelReasoning:        env("LLM_MODEL_REASONING", ""),
+			ModelWriter:           env("LLM_MODEL_WRITER", ""),
+			Timeout:               envDuration("LLM_TIMEOUT", 90*time.Second),
+			DailyTokenBudget:      int64(envInt("LLM_DAILY_TOKEN_BUDGET", 300_000)),
+			DailyCallLimit:        envInt("LLM_DAILY_CALL_LIMIT", 80),
+			PerMinuteLimit:        envInt("LLM_PER_MINUTE_LIMIT", 6),
+			MaxOutputTokens:       envInt("LLM_MAX_OUTPUT_TOKENS", 3500),
+			MaxInputChars:         envInt("LLM_MAX_INPUT_CHARS", 24000),
+			PerUserHourly:         envInt("ANALYZE_PER_USER_HOURLY", 10),
+			QuestionsPerAnalysis:  envInt("ANALYSIS_QUESTIONS_PER_ANALYSIS", 10),
+			QuestionsPerUserDaily: envInt("ANALYSIS_QUESTIONS_PER_USER_DAILY", 30),
+			SupportPerUserDaily:   envInt("SUPPORT_QUESTIONS_PER_USER_DAILY", 20),
+			JSONMode:              envBool("LLM_JSON_MODE", true),
 		},
 	}
 	tz, err := time.LoadLocation(env("APP_TIMEZONE", "Europe/Moscow"))

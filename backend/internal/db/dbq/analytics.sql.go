@@ -439,6 +439,573 @@ func (q *Queries) UserMonthlyExposure(ctx context.Context, arg UserMonthlyExposu
 	return items, nil
 }
 
+const userQualityAnalysisStats = `-- name: UserQualityAnalysisStats :one
+WITH fulls AS (
+  SELECT pa.id, pa.article_id, pa.user_id, pa.company_id, pa.role_code, pa.depth, pa.method, pa.input_hash, pa.relevance_score, pa.importance_level, pa.impact_type, pa.matched_topics, pa.why_it_matters, pa.result, pa.run_id, pa.created_at FROM personal_analyses pa
+  WHERE pa.user_id = $1 AND pa.depth = 'full' AND pa.method = 'llm' AND pa.created_at >= $2
+)
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'bank_view', '[]'::jsonb)) > 0)::int AS with_bank_view,
+       count(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM jsonb_array_elements(coalesce(result->'insight'->'evidence_sources', '[]'::jsonb)) e
+         WHERE e->>'type' = 'company_data'
+       ))::int AS with_company_facts,
+       count(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM jsonb_array_elements(coalesce(result->'insight'->'validation_notes', '[]'::jsonb)) n
+         WHERE n #>> '{}' ILIKE '%доработан после самопроверки%'
+       ))::int AS revised,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'evidence_sources', '[]'::jsonb)))), 0)::numeric(10,2) AS avg_sources,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'risks', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_risks,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'opportunities', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_opportunities,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'recommended_actions', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_actions,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'validation_notes', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_validation_notes,
+       -- Фактологическая точность (анализы, выполненные после появления проверки).
+       count(*) FILTER (WHERE result->'insight' ? 'source_coverage')::int AS with_coverage,
+       coalesce(round(avg((result->'insight'->'source_coverage'->>'ratio')::numeric)
+         FILTER (WHERE result->'insight' ? 'source_coverage') * 100), 0)::int AS avg_source_coverage,
+       coalesce(sum((result->'insight'->'fact_check'->>'checked')::int), 0)::int AS checked_values,
+       coalesce(sum(jsonb_array_length(coalesce(result->'insight'->'fact_check'->'unverified', '[]'::jsonb))), 0)::int AS unverified_values,
+       count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'fact_check'->'unverified', '[]'::jsonb)) > 0)::int AS with_unverified,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'full_text')::int AS level_full_text,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'summary')::int AS level_summary,
+       count(*) FILTER (WHERE result->'insight'->'source_completeness'->>'level' = 'title_only')::int AS level_title_only,
+       -- Содержательность: механизм через признаки компании и конкретные действия.
+       count(*) FILTER (WHERE result->'insight' ? 'used_company_factors')::int AS with_factor_field,
+       count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'used_company_factors', '[]'::jsonb)) > 0)::int AS with_company_factors,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'used_company_factors', '[]'::jsonb)))
+         FILTER (WHERE result->'insight' ? 'used_company_factors'), 2), 0)::numeric(10,2) AS avg_company_factors,
+       coalesce(sum((SELECT count(*) FROM jsonb_array_elements(coalesce(result->'insight'->'recommended_actions', '[]'::jsonb)) a
+         WHERE coalesce(a->>'object', '') <> '' AND coalesce(a->>'owner', '') <> '')), 0)::int AS concrete_actions,
+       coalesce(sum((SELECT count(*) FROM jsonb_array_elements(coalesce(result->'insight'->'validation_notes', '[]'::jsonb)) n
+         WHERE n #>> '{}' ILIKE '%общее действие%')), 0)::int AS generic_actions_removed
+FROM fulls
+`
+
+type UserQualityAnalysisStatsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualityAnalysisStatsRow struct {
+	Total                 int32   `json:"total"`
+	WithBankView          int32   `json:"with_bank_view"`
+	WithCompanyFacts      int32   `json:"with_company_facts"`
+	Revised               int32   `json:"revised"`
+	AvgSources            float64 `json:"avg_sources"`
+	AvgRisks              float64 `json:"avg_risks"`
+	AvgOpportunities      float64 `json:"avg_opportunities"`
+	AvgActions            float64 `json:"avg_actions"`
+	AvgValidationNotes    float64 `json:"avg_validation_notes"`
+	WithCoverage          int32   `json:"with_coverage"`
+	AvgSourceCoverage     int32   `json:"avg_source_coverage"`
+	CheckedValues         int32   `json:"checked_values"`
+	UnverifiedValues      int32   `json:"unverified_values"`
+	WithUnverified        int32   `json:"with_unverified"`
+	LevelFullText         int32   `json:"level_full_text"`
+	LevelSummary          int32   `json:"level_summary"`
+	LevelTitleOnly        int32   `json:"level_title_only"`
+	WithFactorField       int32   `json:"with_factor_field"`
+	WithCompanyFactors    int32   `json:"with_company_factors"`
+	AvgCompanyFactors     float64 `json:"avg_company_factors"`
+	ConcreteActions       int32   `json:"concrete_actions"`
+	GenericActionsRemoved int32   `json:"generic_actions_removed"`
+}
+
+// Grounding и наполненность сохранённых полных анализов.
+func (q *Queries) UserQualityAnalysisStats(ctx context.Context, arg UserQualityAnalysisStatsParams) (UserQualityAnalysisStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualityAnalysisStats, arg.UserID, arg.Since)
+	var i UserQualityAnalysisStatsRow
+	err := row.Scan(
+		&i.Total,
+		&i.WithBankView,
+		&i.WithCompanyFacts,
+		&i.Revised,
+		&i.AvgSources,
+		&i.AvgRisks,
+		&i.AvgOpportunities,
+		&i.AvgActions,
+		&i.AvgValidationNotes,
+		&i.WithCoverage,
+		&i.AvgSourceCoverage,
+		&i.CheckedValues,
+		&i.UnverifiedValues,
+		&i.WithUnverified,
+		&i.LevelFullText,
+		&i.LevelSummary,
+		&i.LevelTitleOnly,
+		&i.WithFactorField,
+		&i.WithCompanyFactors,
+		&i.AvgCompanyFactors,
+		&i.ConcreteActions,
+		&i.GenericActionsRemoved,
+	)
+	return i, err
+}
+
+const userQualityDaily = `-- name: UserQualityDaily :many
+SELECT date_trunc('day', started_at)::timestamptz AS day,
+       count(*)::int AS runs,
+       count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+       count(*) FILTER (WHERE status = 'failed')::int AS failed,
+       coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint AS tokens,
+       coalesce(round(avg(extract(epoch FROM (finished_at - started_at)) * 1000)
+         FILTER (WHERE finished_at IS NOT NULL)), 0)::bigint AS avg_latency_ms
+FROM analysis_runs
+WHERE user_id = $1 AND kind = 'analyze' AND started_at >= $2
+GROUP BY 1 ORDER BY 1
+`
+
+type UserQualityDailyParams struct {
+	UserID *uuid.UUID `json:"user_id"`
+	Since  time.Time  `json:"since"`
+}
+
+type UserQualityDailyRow struct {
+	Day          time.Time `json:"day"`
+	Runs         int32     `json:"runs"`
+	Succeeded    int32     `json:"succeeded"`
+	Failed       int32     `json:"failed"`
+	Tokens       int64     `json:"tokens"`
+	AvgLatencyMs int64     `json:"avg_latency_ms"`
+}
+
+func (q *Queries) UserQualityDaily(ctx context.Context, arg UserQualityDailyParams) ([]UserQualityDailyRow, error) {
+	rows, err := q.db.Query(ctx, userQualityDaily, arg.UserID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserQualityDailyRow{}
+	for rows.Next() {
+		var i UserQualityDailyRow
+		if err := rows.Scan(
+			&i.Day,
+			&i.Runs,
+			&i.Succeeded,
+			&i.Failed,
+			&i.Tokens,
+			&i.AvgLatencyMs,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userQualityFeedbackStats = `-- name: UserQualityFeedbackStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE rating = 1)::int AS positive,
+       count(*) FILTER (WHERE rating = -1)::int AS negative,
+       count(*) FILTER (WHERE comment <> '')::int AS with_comment
+FROM feedback
+WHERE user_id = $1 AND created_at >= $2
+`
+
+type UserQualityFeedbackStatsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualityFeedbackStatsRow struct {
+	Total       int32 `json:"total"`
+	Positive    int32 `json:"positive"`
+	Negative    int32 `json:"negative"`
+	WithComment int32 `json:"with_comment"`
+}
+
+func (q *Queries) UserQualityFeedbackStats(ctx context.Context, arg UserQualityFeedbackStatsParams) (UserQualityFeedbackStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualityFeedbackStats, arg.UserID, arg.Since)
+	var i UserQualityFeedbackStatsRow
+	err := row.Scan(
+		&i.Total,
+		&i.Positive,
+		&i.Negative,
+		&i.WithComment,
+	)
+	return i, err
+}
+
+const userQualityModels = `-- name: UserQualityModels :many
+WITH step_rows AS (
+  SELECT s
+  FROM analysis_runs r CROSS JOIN LATERAL jsonb_array_elements(r.steps) s
+  WHERE r.user_id = $1 AND r.kind = 'analyze' AND r.started_at >= $2
+)
+SELECT (s->>'model')::text AS model,
+       count(*)::int AS calls,
+       coalesce(sum(coalesce((s->>'tokens')::int, 0)), 0)::bigint AS tokens,
+       count(*) FILTER (WHERE s->>'status' = 'error')::int AS errors,
+       count(*) FILTER (WHERE coalesce((s->>'cached')::boolean, false))::int AS cached
+FROM step_rows
+WHERE coalesce(s->>'model', '') <> ''
+GROUP BY 1 ORDER BY calls DESC, model
+`
+
+type UserQualityModelsParams struct {
+	UserID *uuid.UUID `json:"user_id"`
+	Since  time.Time  `json:"since"`
+}
+
+type UserQualityModelsRow struct {
+	Model  string `json:"model"`
+	Calls  int32  `json:"calls"`
+	Tokens int64  `json:"tokens"`
+	Errors int32  `json:"errors"`
+	Cached int32  `json:"cached"`
+}
+
+// Токены конкретной модели берутся из трассы шага, а не из итога запуска.
+func (q *Queries) UserQualityModels(ctx context.Context, arg UserQualityModelsParams) ([]UserQualityModelsRow, error) {
+	rows, err := q.db.Query(ctx, userQualityModels, arg.UserID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserQualityModelsRow{}
+	for rows.Next() {
+		var i UserQualityModelsRow
+		if err := rows.Scan(
+			&i.Model,
+			&i.Calls,
+			&i.Tokens,
+			&i.Errors,
+			&i.Cached,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userQualityPromptVersions = `-- name: UserQualityPromptVersions :many
+SELECT coalesce(nullif(pa.result->>'prompt_version', ''), 'unknown')::text AS prompt_version,
+       count(*)::int AS analyses,
+       coalesce(round(avg(pa.relevance_score)), 0)::int AS avg_relevance,
+       count(f.id) FILTER (WHERE f.rating = 1)::int AS positive,
+       count(f.id) FILTER (WHERE f.rating = -1)::int AS negative
+FROM personal_analyses pa
+LEFT JOIN feedback f ON f.analysis_id = pa.id
+WHERE pa.user_id = $1 AND pa.depth = 'full' AND pa.method = 'llm' AND pa.created_at >= $2
+GROUP BY 1 ORDER BY analyses DESC, prompt_version
+`
+
+type UserQualityPromptVersionsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualityPromptVersionsRow struct {
+	PromptVersion string `json:"prompt_version"`
+	Analyses      int32  `json:"analyses"`
+	AvgRelevance  int32  `json:"avg_relevance"`
+	Positive      int32  `json:"positive"`
+	Negative      int32  `json:"negative"`
+}
+
+func (q *Queries) UserQualityPromptVersions(ctx context.Context, arg UserQualityPromptVersionsParams) ([]UserQualityPromptVersionsRow, error) {
+	rows, err := q.db.Query(ctx, userQualityPromptVersions, arg.UserID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserQualityPromptVersionsRow{}
+	for rows.Next() {
+		var i UserQualityPromptVersionsRow
+		if err := rows.Scan(
+			&i.PromptVersion,
+			&i.Analyses,
+			&i.AvgRelevance,
+			&i.Positive,
+			&i.Negative,
+		); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userQualityQuestionPresets = `-- name: UserQualityQuestionPresets :many
+SELECT coalesce(preset, 'custom')::text AS preset, count(*)::int AS questions
+FROM analysis_questions
+WHERE user_id = $1 AND created_at >= $2 AND status = 'succeeded'
+GROUP BY 1 ORDER BY questions DESC, preset
+`
+
+type UserQualityQuestionPresetsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualityQuestionPresetsRow struct {
+	Preset    string `json:"preset"`
+	Questions int32  `json:"questions"`
+}
+
+func (q *Queries) UserQualityQuestionPresets(ctx context.Context, arg UserQualityQuestionPresetsParams) ([]UserQualityQuestionPresetsRow, error) {
+	rows, err := q.db.Query(ctx, userQualityQuestionPresets, arg.UserID, arg.Since)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	items := []UserQualityQuestionPresetsRow{}
+	for rows.Next() {
+		var i UserQualityQuestionPresetsRow
+		if err := rows.Scan(&i.Preset, &i.Questions); err != nil {
+			return nil, err
+		}
+		items = append(items, i)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return items, nil
+}
+
+const userQualityQuestionStats = `-- name: UserQualityQuestionStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+       count(*) FILTER (WHERE status = 'failed')::int AS failed,
+       count(DISTINCT analysis_id)::int AS analyses,
+       count(*) FILTER (WHERE method = 'llm' AND NOT cached)::int AS llm_calls,
+       count(*) FILTER (WHERE method = 'deterministic')::int AS deterministic,
+       (count(*) FILTER (WHERE cached) + coalesce(sum(cache_hits), 0))::int AS cache_hits,
+       count(*) FILTER (WHERE preset IS NOT NULL)::int AS quick,
+       count(*) FILTER (WHERE status = 'succeeded' AND cardinality(source_ids) > 0)::int AS with_sources,
+       coalesce(round(avg(cardinality(source_ids)) FILTER (WHERE status = 'succeeded'), 2), 0)::numeric(10,2) AS avg_sources,
+       count(*) FILTER (WHERE status = 'succeeded' AND coalesce((answer->>'out_of_scope')::boolean, false))::int AS out_of_scope,
+       count(*) FILTER (WHERE status = 'succeeded' AND coalesce(answer->>'not_in_sources', '') <> '')::int AS not_in_sources,
+       coalesce(sum(CASE WHEN jsonb_typeof(answer->'validation_notes') = 'array'
+         THEN jsonb_array_length(answer->'validation_notes') ELSE 0 END), 0)::int AS validator_corrections,
+       coalesce(round(avg(duration_ms) FILTER (WHERE method = 'llm' AND NOT cached AND status = 'succeeded')), 0)::int AS avg_llm_latency_ms,
+       coalesce(sum(tokens), 0)::bigint AS tokens
+FROM analysis_questions
+WHERE user_id = $1 AND created_at >= $2
+`
+
+type UserQualityQuestionStatsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualityQuestionStatsRow struct {
+	Total                int32   `json:"total"`
+	Succeeded            int32   `json:"succeeded"`
+	Failed               int32   `json:"failed"`
+	Analyses             int32   `json:"analyses"`
+	LlmCalls             int32   `json:"llm_calls"`
+	Deterministic        int32   `json:"deterministic"`
+	CacheHits            int32   `json:"cache_hits"`
+	Quick                int32   `json:"quick"`
+	WithSources          int32   `json:"with_sources"`
+	AvgSources           float64 `json:"avg_sources"`
+	OutOfScope           int32   `json:"out_of_scope"`
+	NotInSources         int32   `json:"not_in_sources"`
+	ValidatorCorrections int32   `json:"validator_corrections"`
+	AvgLlmLatencyMs      int32   `json:"avg_llm_latency_ms"`
+	Tokens               int64   `json:"tokens"`
+}
+
+// Уточняющие вопросы к анализам: полезность, опора на источники и расход.
+func (q *Queries) UserQualityQuestionStats(ctx context.Context, arg UserQualityQuestionStatsParams) (UserQualityQuestionStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualityQuestionStats, arg.UserID, arg.Since)
+	var i UserQualityQuestionStatsRow
+	err := row.Scan(
+		&i.Total,
+		&i.Succeeded,
+		&i.Failed,
+		&i.Analyses,
+		&i.LlmCalls,
+		&i.Deterministic,
+		&i.CacheHits,
+		&i.Quick,
+		&i.WithSources,
+		&i.AvgSources,
+		&i.OutOfScope,
+		&i.NotInSources,
+		&i.ValidatorCorrections,
+		&i.AvgLlmLatencyMs,
+		&i.Tokens,
+	)
+	return i, err
+}
+
+const userQualityRunStats = `-- name: UserQualityRunStats :one
+WITH runs AS (
+  SELECT id, kind, status, user_id, company_id, article_id, models, prompt_tokens, completion_tokens, steps, error, started_at, finished_at FROM analysis_runs
+  WHERE user_id = $1 AND kind = 'analyze' AND started_at >= $2
+)
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+       count(*) FILTER (WHERE status = 'failed')::int AS failed,
+       count(*) FILTER (WHERE error ILIKE '%неверном формате%' OR error ILIKE '%JSON%')::int AS json_errors,
+       count(*) FILTER (WHERE error ILIKE '%обрезан%' OR EXISTS (
+         SELECT 1 FROM jsonb_array_elements(steps) s WHERE s->>'finish_reason' = 'length'
+       ))::int AS truncated,
+       count(*) FILTER (WHERE error ILIKE '%время ожидания%' OR error ILIKE '%deadline exceeded%' OR error ILIKE '%timeout%')::int AS timeouts,
+       count(*) FILTER (WHERE error ILIKE '%ключ%отклон%' OR error ILIKE '%авторизац%')::int AS auth_errors,
+       count(*) FILTER (WHERE error ILIKE '%лимит%' OR error ILIKE '%rate%')::int AS rate_limited,
+       coalesce(round(avg(extract(epoch FROM (finished_at - started_at)) * 1000)
+         FILTER (WHERE finished_at IS NOT NULL)), 0)::bigint AS avg_latency_ms,
+       coalesce(round((percentile_cont(0.95) WITHIN GROUP (
+         ORDER BY extract(epoch FROM (finished_at - started_at)) * 1000
+       ) FILTER (WHERE finished_at IS NOT NULL))::numeric), 0)::bigint AS p95_latency_ms,
+       coalesce(round(avg(prompt_tokens + completion_tokens)), 0)::int AS avg_tokens,
+       coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint AS total_tokens,
+       coalesce(round(avg(jsonb_array_length(steps))), 0)::int AS avg_steps
+FROM runs
+`
+
+type UserQualityRunStatsParams struct {
+	UserID *uuid.UUID `json:"user_id"`
+	Since  time.Time  `json:"since"`
+}
+
+type UserQualityRunStatsRow struct {
+	Total        int32 `json:"total"`
+	Succeeded    int32 `json:"succeeded"`
+	Failed       int32 `json:"failed"`
+	JsonErrors   int32 `json:"json_errors"`
+	Truncated    int32 `json:"truncated"`
+	Timeouts     int32 `json:"timeouts"`
+	AuthErrors   int32 `json:"auth_errors"`
+	RateLimited  int32 `json:"rate_limited"`
+	AvgLatencyMs int64 `json:"avg_latency_ms"`
+	P95LatencyMs int64 `json:"p95_latency_ms"`
+	AvgTokens    int32 `json:"avg_tokens"`
+	TotalTokens  int64 `json:"total_tokens"`
+	AvgSteps     int32 `json:"avg_steps"`
+}
+
+// Техническая стабильность полного агентного анализа текущего пользователя.
+func (q *Queries) UserQualityRunStats(ctx context.Context, arg UserQualityRunStatsParams) (UserQualityRunStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualityRunStats, arg.UserID, arg.Since)
+	var i UserQualityRunStatsRow
+	err := row.Scan(
+		&i.Total,
+		&i.Succeeded,
+		&i.Failed,
+		&i.JsonErrors,
+		&i.Truncated,
+		&i.Timeouts,
+		&i.AuthErrors,
+		&i.RateLimited,
+		&i.AvgLatencyMs,
+		&i.P95LatencyMs,
+		&i.AvgTokens,
+		&i.TotalTokens,
+		&i.AvgSteps,
+	)
+	return i, err
+}
+
+const userQualityStepStats = `-- name: UserQualityStepStats :one
+WITH runs AS (
+  SELECT id, kind, status, user_id, company_id, article_id, models, prompt_tokens, completion_tokens, steps, error, started_at, finished_at FROM analysis_runs
+  WHERE user_id = $1 AND kind = 'analyze' AND started_at >= $2
+), step_rows AS (
+  SELECT s
+  FROM runs CROSS JOIN LATERAL jsonb_array_elements(steps) s
+)
+SELECT count(*) FILTER (WHERE coalesce(s->>'model', '') <> '')::int AS llm_steps,
+       count(*) FILTER (WHERE coalesce((s->>'cached')::boolean, false))::int AS cached_steps,
+       count(*) FILTER (WHERE s->>'name' = 'self_check')::int AS self_checks,
+       count(*) FILTER (WHERE s->>'name' = 'self_check' AND s->>'status' = 'ok'
+         AND coalesce((s->'detail'->>'passed')::boolean, false))::int AS self_check_passed,
+       count(*) FILTER (WHERE s->>'name' = 'revise')::int AS revisions,
+       coalesce(sum(CASE WHEN jsonb_typeof(s->'detail'->'validation_notes') = 'array'
+         THEN jsonb_array_length(s->'detail'->'validation_notes') ELSE 0 END), 0)::int AS validator_corrections
+FROM step_rows
+`
+
+type UserQualityStepStatsParams struct {
+	UserID *uuid.UUID `json:"user_id"`
+	Since  time.Time  `json:"since"`
+}
+
+type UserQualityStepStatsRow struct {
+	LlmSteps             int32 `json:"llm_steps"`
+	CachedSteps          int32 `json:"cached_steps"`
+	SelfChecks           int32 `json:"self_checks"`
+	SelfCheckPassed      int32 `json:"self_check_passed"`
+	Revisions            int32 `json:"revisions"`
+	ValidatorCorrections int32 `json:"validator_corrections"`
+}
+
+func (q *Queries) UserQualityStepStats(ctx context.Context, arg UserQualityStepStatsParams) (UserQualityStepStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualityStepStats, arg.UserID, arg.Since)
+	var i UserQualityStepStatsRow
+	err := row.Scan(
+		&i.LlmSteps,
+		&i.CachedSteps,
+		&i.SelfChecks,
+		&i.SelfCheckPassed,
+		&i.Revisions,
+		&i.ValidatorCorrections,
+	)
+	return i, err
+}
+
+const userQualitySupportStats = `-- name: UserQualitySupportStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE method = 'kb')::int AS from_kb,
+       count(*) FILTER (WHERE method = 'llm')::int AS llm_accepted,
+       count(*) FILTER (WHERE method = 'fallback')::int AS llm_rejected,
+       count(*) FILTER (WHERE cached)::int AS cached,
+       count(*) FILTER (WHERE coalesce((answer->>'out_of_scope')::boolean, false))::int AS out_of_scope,
+       count(*) FILTER (WHERE coalesce((answer->>'not_in_kb')::boolean, false))::int AS not_in_kb,
+       coalesce(sum(jsonb_array_length(coalesce(answer->'checks'->'notes', '[]'::jsonb))), 0)::int AS check_corrections,
+       coalesce(sum(tokens), 0)::bigint AS tokens
+FROM support_messages
+WHERE user_id = $1 AND created_at >= $2 AND status = 'succeeded'
+`
+
+type UserQualitySupportStatsParams struct {
+	UserID uuid.UUID `json:"user_id"`
+	Since  time.Time `json:"since"`
+}
+
+type UserQualitySupportStatsRow struct {
+	Total            int32 `json:"total"`
+	FromKb           int32 `json:"from_kb"`
+	LlmAccepted      int32 `json:"llm_accepted"`
+	LlmRejected      int32 `json:"llm_rejected"`
+	Cached           int32 `json:"cached"`
+	OutOfScope       int32 `json:"out_of_scope"`
+	NotInKb          int32 `json:"not_in_kb"`
+	CheckCorrections int32 `json:"check_corrections"`
+	Tokens           int64 `json:"tokens"`
+}
+
+// ИИ-помощник поддержки: как часто ответ модели отклоняется проверкой.
+func (q *Queries) UserQualitySupportStats(ctx context.Context, arg UserQualitySupportStatsParams) (UserQualitySupportStatsRow, error) {
+	row := q.db.QueryRow(ctx, userQualitySupportStats, arg.UserID, arg.Since)
+	var i UserQualitySupportStatsRow
+	err := row.Scan(
+		&i.Total,
+		&i.FromKb,
+		&i.LlmAccepted,
+		&i.LlmRejected,
+		&i.Cached,
+		&i.OutOfScope,
+		&i.NotInKb,
+		&i.CheckCorrections,
+		&i.Tokens,
+	)
+	return i, err
+}
+
 const userTopRisksAndOpportunities = `-- name: UserTopRisksAndOpportunities :many
 SELECT pa.article_id, a.title, pa.importance_level, pa.relevance_score, kind::text AS kind, item->>'title' AS item_title,
        item->>'description' AS item_description

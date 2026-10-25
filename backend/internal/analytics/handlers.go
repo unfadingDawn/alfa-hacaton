@@ -32,6 +32,7 @@ type Handler struct {
 func (h *Handler) Routes(r chi.Router) {
 	r.Get("/dashboard", h.dashboard)
 	r.Get("/analytics", h.analytics)
+	r.Get("/analytics/quality", h.quality)
 	r.Get("/system/status", h.status)
 }
 
@@ -197,6 +198,150 @@ func (h *Handler) analytics(w http.ResponseWriter, r *http.Request) {
 		"notes": []string{
 			"Темы статей размечены моделью (llm), по словарю без ИИ (keywords) или по названию материала банка (metadata) — см. поле method.",
 			"Тип влияния, баланс и накопленное влияние считаются только по оценкам модели; помесячная значимость и каналы влияния — по лучшей доступной оценке (модель или правила).",
+		},
+	})
+}
+
+func nilIfZero(v, n int32) any {
+	if n == 0 {
+		return nil
+	}
+	return v
+}
+
+func qualityPercent(a, b int32) any {
+	if b == 0 {
+		return nil
+	}
+	return int(float64(a)/float64(b)*100 + 0.5)
+}
+
+// quality возвращает мониторинг только для текущего пользователя. Endpoint
+// читает уже сохранённые трассы и отзывы и никогда не вызывает LLM.
+func (h *Handler) quality(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	uid := auth.UserID(ctx)
+	days := map[string]int{"7d": 7, "30d": 30, "90d": 90}[r.URL.Query().Get("period")]
+	if days == 0 {
+		days = 30
+	}
+	since := time.Now().AddDate(0, 0, -days)
+	runs, err := h.Q.UserQualityRunStats(ctx, dbq.UserQualityRunStatsParams{UserID: &uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality runs")
+		return
+	}
+	steps, err := h.Q.UserQualityStepStats(ctx, dbq.UserQualityStepStatsParams{UserID: &uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality steps")
+		return
+	}
+	analyses, err := h.Q.UserQualityAnalysisStats(ctx, dbq.UserQualityAnalysisStatsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality analyses")
+		return
+	}
+	feedback, err := h.Q.UserQualityFeedbackStats(ctx, dbq.UserQualityFeedbackStatsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality feedback")
+		return
+	}
+	daily, err := h.Q.UserQualityDaily(ctx, dbq.UserQualityDailyParams{UserID: &uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality daily")
+		return
+	}
+	models, err := h.Q.UserQualityModels(ctx, dbq.UserQualityModelsParams{UserID: &uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality models")
+		return
+	}
+	versions, err := h.Q.UserQualityPromptVersions(ctx, dbq.UserQualityPromptVersionsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality prompt versions")
+		return
+	}
+	questions, err := h.Q.UserQualityQuestionStats(ctx, dbq.UserQualityQuestionStatsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality questions")
+		return
+	}
+	presets, err := h.Q.UserQualityQuestionPresets(ctx, dbq.UserQualityQuestionPresetsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality question presets")
+		return
+	}
+	sup, err := h.Q.UserQualitySupportStats(ctx, dbq.UserQualitySupportStatsParams{UserID: uid, Since: since})
+	if err != nil {
+		httpx.Internal(w, h.Log, err, "quality support")
+		return
+	}
+	httpx.JSON(w, http.StatusOK, map[string]any{
+		"period_days": days,
+		"support": map[string]any{
+			"total": sup.Total, "from_kb": sup.FromKb, "llm_accepted": sup.LlmAccepted, "llm_rejected": sup.LlmRejected,
+			"rejected_rate": qualityPercent(sup.LlmRejected, sup.LlmAccepted+sup.LlmRejected), "cached": sup.Cached,
+			"out_of_scope": sup.OutOfScope, "not_in_kb": sup.NotInKb, "check_corrections": sup.CheckCorrections, "tokens": sup.Tokens,
+		},
+		"runs": map[string]any{
+			"total": runs.Total, "succeeded": runs.Succeeded, "failed": runs.Failed,
+			"success_rate": qualityPercent(runs.Succeeded, runs.Total), "json_errors": runs.JsonErrors,
+			"truncated": runs.Truncated, "timeouts": runs.Timeouts, "auth_errors": runs.AuthErrors,
+			"rate_limited": runs.RateLimited,
+		},
+		"performance": map[string]any{
+			"avg_latency_ms": runs.AvgLatencyMs, "p95_latency_ms": runs.P95LatencyMs,
+			"avg_tokens": runs.AvgTokens, "total_tokens": runs.TotalTokens, "avg_steps": runs.AvgSteps,
+			"llm_steps": steps.LlmSteps, "cached_steps": steps.CachedSteps,
+			"cache_rate": qualityPercent(steps.CachedSteps, steps.LlmSteps),
+		},
+		"quality": map[string]any{
+			"full_analyses": analyses.Total, "with_bank_view": analyses.WithBankView,
+			"bank_view_rate":         qualityPercent(analyses.WithBankView, analyses.Total),
+			"with_company_facts":     analyses.WithCompanyFacts,
+			"company_grounding_rate": qualityPercent(analyses.WithCompanyFacts, analyses.Total),
+			"avg_sources":            analyses.AvgSources, "avg_risks": analyses.AvgRisks,
+			"avg_opportunities": analyses.AvgOpportunities, "avg_actions": analyses.AvgActions,
+			"avg_validation_notes": analyses.AvgValidationNotes,
+			"self_checks":          steps.SelfChecks, "self_check_passed": steps.SelfCheckPassed,
+			"self_check_pass_rate": qualityPercent(steps.SelfCheckPassed, steps.SelfChecks),
+			"revisions":            steps.Revisions, "revised_analyses": analyses.Revised,
+			"validator_corrections": steps.ValidatorCorrections,
+		},
+		"content": map[string]any{
+			"analyses_checked": analyses.WithFactorField, "with_company_factors": analyses.WithCompanyFactors,
+			"company_factors_rate": qualityPercent(analyses.WithCompanyFactors, analyses.WithFactorField),
+			"avg_company_factors":  analyses.AvgCompanyFactors, "concrete_actions": analyses.ConcreteActions,
+			"generic_actions_removed": analyses.GenericActionsRemoved,
+		},
+		"accuracy": map[string]any{
+			"analyses_checked": analyses.WithCoverage, "avg_source_coverage": nilIfZero(analyses.AvgSourceCoverage, analyses.WithCoverage),
+			"checked_values": analyses.CheckedValues, "unverified_values": analyses.UnverifiedValues,
+			"unverified_value_rate": qualityPercent(analyses.UnverifiedValues, analyses.CheckedValues),
+			"with_unverified":       analyses.WithUnverified,
+			"content_levels": map[string]int32{"full_text": analyses.LevelFullText, "summary": analyses.LevelSummary,
+				"title_only": analyses.LevelTitleOnly},
+		},
+		"feedback": map[string]any{
+			"total": feedback.Total, "positive": feedback.Positive, "negative": feedback.Negative,
+			"with_comment":     feedback.WithComment,
+			"helpfulness_rate": qualityPercent(feedback.Positive, feedback.Total),
+		},
+		"questions": map[string]any{
+			"total": questions.Total, "succeeded": questions.Succeeded, "failed": questions.Failed,
+			"success_rate": qualityPercent(questions.Succeeded, questions.Total), "analyses": questions.Analyses,
+			"llm_calls": questions.LlmCalls, "deterministic": questions.Deterministic, "cache_hits": questions.CacheHits,
+			"quick": questions.Quick, "with_sources": questions.WithSources,
+			"grounded_rate": qualityPercent(questions.WithSources, questions.Succeeded), "avg_sources": questions.AvgSources,
+			"out_of_scope": questions.OutOfScope, "not_in_sources": questions.NotInSources,
+			"validator_corrections": questions.ValidatorCorrections, "avg_llm_latency_ms": questions.AvgLlmLatencyMs,
+			"tokens": questions.Tokens, "by_preset": presets,
+		},
+		"daily": daily, "models": models, "prompt_versions": versions,
+		"sufficient": map[string]bool{"runs": runs.Total > 0, "feedback": feedback.Total > 0, "questions": questions.Total > 0},
+		"notes": []string{
+			"Метрики рассчитаны только по данным текущего пользователя и не вызывают языковую модель.",
+			"Пустое процентное значение означает, что для расчёта ещё недостаточно данных.",
 		},
 	})
 }

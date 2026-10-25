@@ -3,10 +3,11 @@
 import Link from "next/link";
 import { createContext, useContext, useEffect } from "react";
 import { usePathname, useRouter } from "next/navigation";
-import { BarChart3, Bookmark, Home, LifeBuoy, LogOut, Newspaper, UserRound } from "lucide-react";
+import { BarChart3, Bookmark, Home, LogOut, Newspaper, UserRound } from "lucide-react";
 import { Logo } from "./brand";
 import { DISCLAIMER } from "@/lib/format";
 import { Avatar } from "./avatar";
+import { SupportWidget } from "@/features/support/widget";
 import { Skeleton, ErrorState } from "./ui/misc";
 import { api } from "@/lib/api";
 import type { Me } from "@/lib/types";
@@ -18,7 +19,6 @@ const nav = [
   { href: "/feed", label: "Лента", icon: Newspaper },
   { href: "/analytics", label: "Аналитика", icon: BarChart3 },
   { href: "/saved", label: "Сохранённые", icon: Bookmark },
-  { href: "/support", label: "Поддержка", icon: LifeBuoy },
 ];
 const cabinet = { href: "/cabinet", label: "Личный кабинет", icon: UserRound };
 
@@ -121,13 +121,16 @@ export function AppShell({ children }: { children: React.ReactNode }) {
               <Skeleton className="h-64" />
             </div>
           ) : (
-            <Ctx.Provider value={{ me: me.data, reload: me.reload }}>{children}</Ctx.Provider>
+            <Ctx.Provider value={{ me: me.data, reload: me.reload }}>
+              {children}
+              <SupportWidget />
+            </Ctx.Provider>
           )}
           <p className="mt-12 border-t border-line/70 pt-4 text-[12px] leading-relaxed text-silver">{DISCLAIMER}</p>
         </div>
       </main>
 
-      <nav className="glass-strong fixed inset-x-3 bottom-3 z-30 grid grid-cols-6 rounded-[20px] px-1 py-1.5 lg:hidden" aria-label="Навигация">
+      <nav className="glass-strong fixed inset-x-3 bottom-3 z-30 grid grid-cols-5 rounded-[20px] px-1 py-1.5 lg:hidden" aria-label="Навигация">
         {[...nav, cabinet].map((n) => {
           const active = isActive(n.href);
           return (
@@ -147,8 +150,8 @@ export function AppShell({ children }: { children: React.ReactNode }) {
   );
 }
 
-// Короткие подписи для нижней панели на телефоне (шесть пунктов в ~60 px каждый).
-const SHORT: Record<string, string> = { "Сохранённые": "Закладки", "Поддержка": "Помощь", "Личный кабинет": "Кабинет" };
+// Короткие подписи для нижней панели на телефоне. Поддержка — плавающая кнопка в правом нижнем углу.
+const SHORT: Record<string, string> = { "Сохранённые": "Закладки", "Личный кабинет": "Кабинет" };
 
 export function PageHeader({ title, lead, action }: { title: string; lead?: React.ReactNode; action?: React.ReactNode }) {
   return (

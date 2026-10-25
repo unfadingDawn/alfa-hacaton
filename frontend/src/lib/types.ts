@@ -196,13 +196,35 @@ export type Insight = {
   potential_impact: string;
   risks: RiskOpp[];
   opportunities: RiskOpp[];
-  recommended_actions: { action: string; rationale: string; owner: string; source_ids: string[] }[];
+  recommended_actions: {
+    action: string;
+    object?: string;
+    owner: string;
+    horizon?: "short" | "medium" | "long";
+    rationale: string;
+    source_ids: string[];
+  }[];
+  used_company_factors?: { fact_id: string; mechanism: string }[];
   bank_view: Claim[];
   assumptions: string[];
   uncertainty_notes: string[];
   evidence_sources: Evidence[];
   validation_notes?: string[];
+  fact_check?: FactCheck;
+  source_coverage?: { confirmed: number; total: number; ratio: number };
+  source_completeness?: SourceCompleteness;
 };
+
+export type ContentLevel = "title_only" | "summary" | "full_text";
+export type SourceCompleteness = { level: ContentLevel; label: string; note?: string };
+export type UnverifiedValue = {
+  path: string;
+  kind: "percent" | "money" | "term" | "date" | "year" | "entity";
+  value: string;
+  claim: string;
+  action: "removed" | "marked";
+};
+export type FactCheck = { checked: number; verified: number; unverified: UnverifiedValue[] };
 
 export type RunStep = {
   name: string;
@@ -213,7 +235,23 @@ export type RunStep = {
   tokens: number;
   cached?: boolean;
   summary: string;
+  finish_reason?: string;
+  detail?: unknown;
 };
+
+export type Plan = {
+  focus_questions: string[];
+  research_queries: string[];
+  news_queries: string[];
+  company_fact_ids: string[];
+  hypotheses: string[];
+};
+
+export type SearchQuery = { tool: "search_research" | "search_news"; query: string; stage: "plan" | "self_check"; found_ids: string[] };
+export type SourceUse = { id: string; type: Evidence["type"]; title: string; page?: number; query?: string; used: boolean; sections: string[] };
+export type SourcesReport = { sources: SourceUse[]; empty_queries: SearchQuery[]; queries: SearchQuery[]; company_facts_total: number };
+export type CheckIssue = { path: string; problem: string; severity: "low" | "high" };
+export type Revision = { applied: boolean; issues: CheckIssue[]; changes: string[]; note?: string };
 
 export type Run = {
   id: string;
@@ -236,7 +274,17 @@ export type FullAnalysis = {
   why_it_matters: string;
   role_code: string;
   created_at: string;
-  result: { insight: Insight; role?: Role; models?: string[]; generated_at?: string } | null;
+  result: {
+    insight: Insight;
+    role?: Role;
+    models?: string[];
+    generated_at?: string;
+    prompt_version?: string;
+    plan?: Plan;
+    classification?: { event_type?: string; topics?: { code: string }[] };
+    sources_report?: SourcesReport;
+    revision?: Revision;
+  } | null;
 };
 
 export type ArticleDetail = {
@@ -253,6 +301,9 @@ export type ArticleDetail = {
   run?: Run;
   is_saved: boolean;
   feedback?: { rating: number; comment: string };
+  content_level?: ContentLevel | null;
+  updated_at?: string | null;
+  source_completeness?: SourceCompleteness;
 };
 
 export type GuardStatus = {
@@ -280,4 +331,46 @@ export type Dashboard = {
     topics: { code: string; name: string; articles: number }[];
   };
   llm: LlmBrief;
+};
+
+// Уточняющие вопросы к готовому анализу.
+export type AnswerPoint = {
+  text: string;
+  source_ids: string[];
+  basis: "fact" | "bank_view" | "company_data" | "model_inference";
+};
+
+export type QAAnswer = {
+  answer: string;
+  points: AnswerPoint[];
+  not_in_sources: string;
+  out_of_scope: boolean;
+  sources: Evidence[];
+  validation_notes?: string[];
+};
+
+export type AnalysisQuestion = {
+  id: string;
+  question: string;
+  preset: string | null;
+  method: "llm" | "deterministic";
+  answer: QAAnswer;
+  source_ids: string[];
+  model: string;
+  prompt_version: string;
+  tokens: number;
+  duration_ms: number;
+  cached: boolean;
+  created_at: string;
+  outdated: boolean;
+};
+
+export type QuestionLimits = { per_analysis: number; used_for_analysis: number; per_user_daily: number; used_today: number };
+export type QuickQuestion = { code: string; text: string; deterministic: boolean };
+
+export type QuestionHistory = {
+  analysis_id: string;
+  items: AnalysisQuestion[];
+  limits: QuestionLimits;
+  quick_questions: QuickQuestion[];
 };

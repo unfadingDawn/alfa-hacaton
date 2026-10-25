@@ -101,6 +101,23 @@ type Context struct {
 	Horizon      string
 	Detail       string
 	TopicNames   map[string]string
+	// Полнота текста основной новости: title_only | summary | full_text.
+	ContentLevel string
+}
+
+// completenessRule — как учитывать полноту источника в выводах.
+func completenessRule(level string) string {
+	switch level {
+	case "title_only":
+		return "ПОЛНОТА ИСТОЧНИКА: у новости [A1] есть только заголовок. В what_happened.facts — только то, что прямо сказано в заголовке; " +
+			"не домысливай причины, суммы и сроки; importance_level не выше medium, если важность не следует из заголовка; " +
+			"в uncertainty_notes укажи, что текст новости недоступен."
+	case "full_text":
+		return "ПОЛНОТА ИСТОЧНИКА: у новости [A1] доступен полный текст."
+	default:
+		return "ПОЛНОТА ИСТОЧНИКА: у новости [A1] только заголовок и анонс, полного текста нет. Не делай выводов о деталях, " +
+			"которых нет в анонсе, и укажи это в uncertainty_notes."
+	}
 }
 
 func PlanMessages(article Evidence, cls *Classification, ctx Context) []llm.Message {
@@ -159,10 +176,14 @@ type RiskOpp struct {
 	SourceIDs   []string `json:"source_ids"`
 }
 
+// Action — конкретное действие: что сделать (action), с чем именно (object),
+// кто (owner), когда (horizon) и почему (rationale).
 type Action struct {
 	Action    string   `json:"action"`
-	Rationale string   `json:"rationale"`
+	Object    string   `json:"object"`
 	Owner     string   `json:"owner"`
+	Horizon   string   `json:"horizon"` // short | medium | long
+	Rationale string   `json:"rationale"`
 	SourceIDs []string `json:"source_ids"`
 }
 
@@ -174,22 +195,29 @@ type WhatHappened struct {
 // Insight — ответ модели. Поля relevance_score … uncertainty_notes — требуемая
 // структура; evidence_sources заполняет backend по реестру.
 type Insight struct {
-	RelevanceScore     int          `json:"relevance_score"`
-	ImportanceLevel    string       `json:"importance_level"`
-	ImpactType         string       `json:"impact_type"`
-	MatchedTopics      []string     `json:"matched_topics"`
-	WhatHappened       WhatHappened `json:"what_happened"`
-	WhyItMatters       string       `json:"why_it_matters"`
-	WhyItMattersIDs    []string     `json:"why_it_matters_source_ids"`
-	PotentialImpact    string       `json:"potential_impact"`
-	Risks              []RiskOpp    `json:"risks"`
-	Opportunities      []RiskOpp    `json:"opportunities"`
-	RecommendedActions []Action     `json:"recommended_actions"`
-	BankView           []Claim      `json:"bank_view"`
-	Assumptions        []string     `json:"assumptions"`
-	UncertaintyNotes   []string     `json:"uncertainty_notes"`
-	EvidenceSources    []Evidence   `json:"evidence_sources"`
-	Validation         []string     `json:"validation_notes,omitempty"`
+	RelevanceScore  int          `json:"relevance_score"`
+	ImportanceLevel string       `json:"importance_level"`
+	ImpactType      string       `json:"impact_type"`
+	MatchedTopics   []string     `json:"matched_topics"`
+	WhatHappened    WhatHappened `json:"what_happened"`
+	WhyItMatters    string       `json:"why_it_matters"`
+	WhyItMattersIDs []string     `json:"why_it_matters_source_ids"`
+	// Признаки компании, повлиявшие на вывод, с механизмом влияния.
+	UsedCompanyFactors []CompanyFactor `json:"used_company_factors"`
+	PotentialImpact    string          `json:"potential_impact"`
+	Risks              []RiskOpp       `json:"risks"`
+	Opportunities      []RiskOpp       `json:"opportunities"`
+	RecommendedActions []Action        `json:"recommended_actions"`
+	BankView           []Claim         `json:"bank_view"`
+	Assumptions        []string        `json:"assumptions"`
+	UncertaintyNotes   []string        `json:"uncertainty_notes"`
+	EvidenceSources    []Evidence      `json:"evidence_sources"`
+	Validation         []string        `json:"validation_notes,omitempty"`
+	// Заполняет backend: проверка чисел и названий, покрытие источниками и
+	// полнота текста основной новости. Значения от модели игнорируются.
+	FactCheck          *FactCheck          `json:"fact_check,omitempty"`
+	SourceCoverage     *SourceCoverage     `json:"source_coverage,omitempty"`
+	SourceCompleteness *SourceCompleteness `json:"source_completeness,omitempty"`
 }
 
 const insightSchema = `{
@@ -201,12 +229,15 @@ const insightSchema = `{
                    "facts": [{"text": "подтверждённый факт", "source_ids": ["A1"]}]},
  "why_it_matters": "почему это важно ИМЕННО этой компании и этой роли — со ссылкой на признаки компании",
  "why_it_matters_source_ids": ["C:...", "A1"],
+ "used_company_factors": [{"fact_id": "C:...", "mechanism": "как именно событие действует на бизнес через этот признак"}],
  "potential_impact": "механизм и масштаб возможного влияния на бизнес",
  "risks": [{"title": "", "description": "", "likelihood": "low|medium|high", "horizon": "short|medium|long",
             "basis": "fact|bank_view|model_inference", "source_ids": []}],
  "opportunities": [{"title": "", "description": "", "likelihood": "low|medium|high", "horizon": "short|medium|long",
                     "basis": "fact|bank_view|model_inference", "source_ids": []}],
- "recommended_actions": [{"action": "конкретное действие или вопрос для проверки", "rationale": "", "owner": "кто", "source_ids": []}],
+ "recommended_actions": [{"action": "что сделать", "object": "с чем именно: договор, кредитная линия, закупка, статья бюджета, поставщик",
+   "owner": "роль или подразделение", "horizon": "short|medium|long", "rationale": "почему — через признак компании или источник",
+   "source_ids": []}],
  "bank_view": [{"text": "позиция/прогноз аналитиков Альфа-Банка своими словами", "source_ids": ["R..."]}],
  "assumptions": ["что предполагается, но не подтверждено данными"],
  "uncertainty_notes": ["ограничения анализа, чего не хватает"]
@@ -233,8 +264,16 @@ func InsightMessages(article Evidence, ctx Context, plan *Plan, reg *Registry, r
    зависит от неизвестных данных — запиши это в assumptions/uncertainty_notes.
 6. Учитывай роль: каждое последствие сформулируй через то, что важно этому сотруднику.
 7. Если новость слабо связана с компанией — честно поставь низкую релевантность.
-8. Не выводи рассуждения, мысли, пояснения или блоки <think>. Сразу верни один JSON-объект. relevance_score — целое число от 0 до 100.
-9. ОГРАНИЧЕНИЯ ОБЪЁМА:
+8. Числа, проценты, суммы, сроки, даты и названия организаций переписывай из источников без изменений. Backend сверяет каждое
+   значение с реестром: факт или позиция банка со значением, которого нет в источниках, будет удалён.
+9. Не выводи рассуждения, мысли, пояснения или блоки <think>. Сразу верни один JSON-объект. relevance_score — целое число от 0 до 100.
+10. used_company_factors — каждый признак компании [C:…], на который опирается вывод, и механизм: через что именно событие
+    меняет выручку, затраты, долг, ликвидность или операции. Не перечисляй признаки, которые не влияют на вывод.
+11. recommended_actions — только конкретные действия: object (что именно), owner (роль или подразделение), horizon, rationale
+    (почему — со ссылкой на признак компании или источник). ЗАПРЕЩЕНЫ общие советы: «следить за развитием ситуации»,
+    «оценить потенциальные риски», «проанализировать ситуацию», «принять меры». Такие пункты будут удалены.
+    Если конкретного действия нет — верни пустой список и объясни в uncertainty_notes, каких данных не хватает.
+12. ОГРАНИЧЕНИЯ ОБЪЁМА:
    - what_happened.summary: максимум 3 предложения.
    - risks, opportunities: не более 3 пунктов каждого.
    - recommended_actions: не более 4 пунктов.
@@ -251,12 +290,15 @@ func InsightMessages(article Evidence, ctx Context, plan *Plan, reg *Registry, r
 
 %s
 
+%s
+
 РЕЕСТР ИСТОЧНИКОВ (ссылайся только на эти ID):
 %s
 %s
 Верни JSON по схеме:
 %s`, ctx.RoleTitle, strings.Join(ctx.RoleFocus, "; "), orDash(ctx.WorkFocus), orDash(strings.Join(ctx.Interests, ", ")),
-		orDash(horizon), detail, ctx.CompanyBrief, orDash(ctx.UserProfile), planText, reg.Render(1000), revision, insightSchema)
+		orDash(horizon), detail, ctx.CompanyBrief, orDash(ctx.UserProfile), planText, completenessRule(ctx.ContentLevel),
+		reg.Render(1000), revision, insightSchema)
 	return []llm.Message{{Role: "system", Content: system}, {Role: "user", Content: user}}
 }
 
@@ -273,6 +315,7 @@ var (
 // Возвращает ошибку, только если ответ непригоден в целом.
 func ValidateInsight(in *Insight, reg *Registry, knownTopics map[string]bool) error {
 	var notes []string
+	in.FactCheck, in.SourceCoverage, in.SourceCompleteness = nil, nil, nil
 	if in.RelevanceScore < 0 || in.RelevanceScore > 100 {
 		notes = append(notes, fmt.Sprintf("relevance_score=%d вне диапазона — ограничен", in.RelevanceScore))
 		in.RelevanceScore = clamp(in.RelevanceScore, 0, 100)
@@ -388,20 +431,11 @@ func ValidateInsight(in *Insight, reg *Registry, knownTopics map[string]bool) er
 	in.Risks = fixRO(in.Risks, "Риск")
 	in.Opportunities = fixRO(in.Opportunities, "Возможность")
 
-	var acts []Action
-	for _, a := range in.RecommendedActions {
-		if strings.TrimSpace(a.Action) == "" {
-			continue
-		}
-		a.SourceIDs, _ = filter(a.SourceIDs)
-		acts = append(acts, a)
-	}
-	if len(acts) > 4 {
-		acts = acts[:4]
-	}
-	in.RecommendedActions = nonNil(acts)
+	notes = append(notes, validateActions(in, reg)...)
+	notes = append(notes, validateFactors(in, reg)...)
 	in.Assumptions = nonNil(limitStr(in.Assumptions, 4, 350))
 	in.UncertaintyNotes = nonNil(limitStr(in.UncertaintyNotes, 4, 350))
+	notes = append(notes, FactCheckInsight(in, reg)...)
 	if unknown > 0 {
 		notes = append(notes, fmt.Sprintf("Удалено ссылок на несуществующие или неподходящие источники: %d", unknown))
 	}
@@ -410,6 +444,7 @@ func ValidateInsight(in *Insight, reg *Registry, knownTopics map[string]bool) er
 	}
 	in.Validation = append(in.Validation, notes...)
 	in.EvidenceSources = usedEvidence(in, reg)
+	in.SourceCoverage = ComputeSourceCoverage(in)
 	return nil
 }
 
@@ -425,6 +460,9 @@ func usedEvidence(in *Insight, reg *Registry) []Evidence {
 		mark(f.SourceIDs)
 	}
 	mark(in.WhyItMattersIDs)
+	for _, f := range in.UsedCompanyFactors {
+		used[f.FactID] = true
+	}
 	for _, b := range in.BankView {
 		mark(b.SourceIDs)
 	}

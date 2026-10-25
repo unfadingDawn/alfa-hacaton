@@ -49,10 +49,13 @@ type Agent struct {
 	Companies *companies.Service
 	Log       *slog.Logger
 	// Ограничение полных анализов на пользователя в час.
-	PerUserHourly   int
-	SemanticEnabled bool
-	SemanticConfig  semantic.Config
-	SemanticRefresh time.Duration
+	PerUserHourly int
+	// Лимиты уточняющих вопросов к анализу (обращения к модели).
+	QuestionsPerAnalysis  int
+	QuestionsPerUserDaily int
+	SemanticEnabled       bool
+	SemanticConfig        semantic.Config
+	SemanticRefresh       time.Duration
 
 	mu       sync.Mutex
 	inflight map[string]chan struct{}
@@ -479,13 +482,14 @@ type Result struct {
 	RunID    *uuid.UUID           `json:"run_id,omitempty"`
 }
 
-func (a *Agent) inputHash(uc *UserContext, articleID uuid.UUID) string {
+func (a *Agent) inputHash(uc *UserContext, articleID uuid.UUID, contentHash string) string {
 	var ints []string
 	for k, v := range uc.Interests {
 		ints = append(ints, fmt.Sprintf("%s:%d", k, v))
 	}
 	sort.Strings(ints)
-	h := sha256.Sum256([]byte(strings.Join([]string{analysis.PromptVersion, articleID.String(), uc.CompanyID, uc.Role.Code,
+	// contentHash: если источник обновил публикацию, анализ строится заново.
+	h := sha256.Sum256([]byte(strings.Join([]string{analysis.PromptVersion, articleID.String(), contentHash, uc.CompanyID, uc.Role.Code,
 		uc.User.PositionTitle, uc.User.WorkFocus, strings.Join(ints, ","), uc.Updated.UTC().Format(time.RFC3339),
 		uc.Pers.Horizon, uc.Pers.Detail, a.Models.Writer}, "|")))
 	return hex.EncodeToString(h[:])
@@ -522,7 +526,14 @@ func (a *Agent) Analyze(ctx context.Context, userID, articleID uuid.UUID, force 
 	if err != nil {
 		return Result{}, err
 	}
-	hash := a.inputHash(uc, articleID)
+	art, err := a.Q.GetArticle(ctx, articleID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Result{}, ErrArticleMissing
+	}
+	if err != nil {
+		return Result{}, err
+	}
+	hash := a.inputHash(uc, articleID, art.ContentHash)
 	if !force {
 		if ex, err := a.Q.GetAnalysis(ctx, dbq.GetAnalysisParams{ArticleID: articleID, UserID: userID, Depth: "full"}); err == nil && ex.InputHash == hash {
 			return Result{Analysis: ex, Cached: true, RunID: ex.RunID}, nil
@@ -565,17 +576,21 @@ func (a *Agent) Analyze(ctx context.Context, userID, articleID uuid.UUID, force 
 	if !a.allowUser(userID) {
 		return Result{}, ErrUserRateLimit
 	}
-	return a.run(ctx, uc, articleID, hash)
+	return a.run(ctx, uc, art, hash)
 }
 
-func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, hash string) (Result, error) {
-	art, err := a.Q.GetArticle(ctx, articleID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return Result{}, ErrArticleMissing
+func contentLevel(art dbq.GetArticleRow) string {
+	if art.ContentLevel != nil {
+		return *art.ContentLevel
 	}
-	if err != nil {
-		return Result{}, err
-	}
+	return "summary"
+}
+
+func (a *Agent) run(ctx context.Context, uc *UserContext, art dbq.GetArticleRow, hash string) (Result, error) {
+	articleID := art.ID
+	level := contentLevel(art)
+	uc.AC.ContentLevel = level
+	completeness := analysis.CompletenessFor(level)
 	uid := uc.User.ID
 	runID, err := a.Q.CreateRun(ctx, dbq.CreateRunParams{Kind: "analyze", UserID: &uid, CompanyID: &uc.CompanyID, ArticleID: &articleID})
 	if err != nil {
@@ -599,9 +614,9 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, h
 		body = art.Summary + "\n" + firstRunes(art.Body, 5000)
 	}
 	main := analysis.Evidence{ID: "A1", Type: "article", Title: art.Title, URL: art.Url, Date: art.PublishedAt.Format("2006-01-02"),
-		Excerpt: body, Note: "источник: " + art.SourceName}
+		Excerpt: body, Note: "источник: " + art.SourceName + "; полнота: " + strings.ToLower(completeness.Label)}
 	if art.SourceKind == "user_submitted" {
-		main.Note = "добавлено пользователем вручную; достоверность не проверена"
+		main.Note = "добавлено пользователем вручную; достоверность не проверена; полнота: " + strings.ToLower(completeness.Label)
 	}
 	reg.Add(main)
 	start := time.Now()
@@ -634,8 +649,8 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, h
 	}
 
 	// 3. Инструменты: аналитика Альфа-Банка и связанные новости (БД, без модели).
-	a.searchResearch(ctx, reg, plan.ResearchQueries, t)
-	a.searchNews(ctx, reg, art.ID, plan.NewsQueries, t)
+	searches := a.searchResearch(ctx, reg, plan.ResearchQueries, "plan", t)
+	searches = append(searches, a.searchNews(ctx, reg, art.ID, plan.NewsQueries, t)...)
 
 	known, _, _ := a.knownTopics(ctx)
 
@@ -651,22 +666,39 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, h
 	var chk analysis.Check
 	resp, err = a.chatJSON(ctx, a.Models.Reasoning, analysis.CheckMessages(draft, reg, uc.AC), 800, 0.1, &chk)
 	final := draft
+	revision := analysis.Revision{Issues: []analysis.CheckIssue{}, Changes: []string{}}
 	if err != nil {
+		revision.Note = "Самопроверка не выполнена: " + err.Error()
 		t.llmStep("self_check", "Самопроверка", resp, err, start, "", nil)
 		draft.UncertaintyNotes = append(draft.UncertaintyNotes, "Автоматическая самопроверка не выполнена: "+err.Error())
 	} else {
 		analysis.ValidateCheck(&chk)
+		// Детерминированная проверка чисел и названий дополняет LLM-контролёра:
+		// неподтверждённое значение — серьёзное замечание и повод для доработки.
+		// То же для содержательности: механизм через признаки компании и конкретные действия.
+		if issues := append(analysis.FactCheckIssues(draft), analysis.ContentIssues(draft)...); len(issues) > 0 {
+			chk.Issues = append(chk.Issues, issues...)
+			chk.Passed = false
+		}
 		t.llmStep("self_check", "Самопроверка", resp, nil, start,
-			fmt.Sprintf("пройдена: %t, замечаний: %d", chk.Passed, len(chk.Issues)), chk)
+			fmt.Sprintf("пройдена: %s, замечаний: %d", yesNo(chk.Passed), len(chk.Issues)), chk)
+		revision.Issues = chk.Issues
+		if chk.Passed {
+			revision.Note = "Самопроверка пройдена, доработка не потребовалась"
+		}
 		if !chk.Passed {
 			if len(chk.AdditionalQueries) > 0 {
-				a.searchResearch(ctx, reg, chk.AdditionalQueries, t)
+				searches = append(searches, a.searchResearch(ctx, reg, chk.AdditionalQueries, "self_check", t)...)
 			}
 			revised, err := a.draft(ctx, main, uc, &plan, reg, known, analysis.RevisionNote(&chk), t, "revise", "Доработка по замечаниям")
 			if err == nil {
 				final = revised
 				final.Validation = append(final.Validation, "Анализ доработан после самопроверки")
+				revision.Applied = true
+				revision.Changes = analysis.DiffInsights(draft, revised)
+				revision.Note = "Анализ доработан по замечаниям самопроверки"
 			} else {
+				revision.Note = "Доработка не удалась, показан черновик"
 				final.UncertaintyNotes = append(final.UncertaintyNotes, "Доработка после самопроверки не удалась; показан черновик с замечаниями контролёра.")
 				for _, i := range chk.Issues {
 					final.Validation = append(final.Validation, "Замечание контролёра: "+i.Problem)
@@ -675,7 +707,12 @@ func (a *Agent) run(ctx context.Context, uc *UserContext, articleID uuid.UUID, h
 		}
 	}
 
+	final.SourceCompleteness = &completeness
+	if completeness.Note != "" {
+		final.UncertaintyNotes = append([]string{completeness.Note}, final.UncertaintyNotes...)
+	}
 	result := map[string]any{"insight": final, "plan": plan, "classification": cls, "role": uc.Role,
+		"revision": revision, "sources_report": analysis.BuildSourcesReport(reg, final, searches),
 		"models": t.modelList(), "prompt_version": analysis.PromptVersion, "generated_at": time.Now().UTC(),
 		"company_id": uc.CompanyID}
 	raw, _ := json.Marshal(result)
@@ -700,9 +737,16 @@ func (a *Agent) draft(ctx context.Context, main analysis.Evidence, uc *UserConte
 		t.llmStep(name, title, resp, err, start, "", nil)
 		return nil, err
 	}
-	t.llmStep(name, title, resp, nil, start, fmt.Sprintf("релевантность %d, важность %s, рисков %d, возможностей %d, источников %d, исправлений валидатора %d",
-		in.RelevanceScore, in.ImportanceLevel, len(in.Risks), len(in.Opportunities), len(in.EvidenceSources), len(in.Validation)),
+	t.llmStep(name, title, resp, nil, start, fmt.Sprintf("релевантность %d, важность %s, рисков %d, возможностей %d, действий %d, признаков компании %d, источников %d, исправлений валидатора %d",
+		in.RelevanceScore, in.ImportanceLevel, len(in.Risks), len(in.Opportunities), len(in.RecommendedActions), len(in.UsedCompanyFactors),
+		len(in.EvidenceSources), len(in.Validation)),
 		map[string]any{"validation_notes": in.Validation})
+	if in.FactCheck != nil {
+		t.toolStep("fact_check_"+name, "Проверка чисел, дат и названий", time.Now(),
+			fmt.Sprintf("проверено значений: %d, не найдено в источниках: %d; покрытие источниками %d из %d утверждений",
+				in.FactCheck.Checked, len(in.FactCheck.Unverified), in.SourceCoverage.Confirmed, in.SourceCoverage.Total),
+			map[string]any{"fact_check": in.FactCheck, "source_coverage": in.SourceCoverage})
+	}
 	return &in, nil
 }
 
@@ -748,13 +792,22 @@ func TSQuery(q string) string {
 var stopWords = map[string]bool{"для": true, "это": true, "как": true, "что": true, "при": true, "или": true, "над": true,
 	"под": true, "его": true, "она": true, "они": true, "the": true, "and": true, "влияние": true, "компании": true}
 
-func (a *Agent) searchResearch(ctx context.Context, reg *analysis.Registry, queries []string, t *tracer) {
+// foundRef — найденный источник в трассе шага.
+type foundRef struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+}
+
+type searchTrace struct {
+	Query string     `json:"query"`
+	Stage string     `json:"stage"`
+	Found []foundRef `json:"found"`
+}
+
+func (a *Agent) searchResearch(ctx context.Context, reg *analysis.Registry, queries []string, stage string, t *tracer) []analysis.SearchQuery {
 	start := time.Now()
-	type hit struct {
-		Query string   `json:"query"`
-		Found []string `json:"found"`
-	}
-	var hits []hit
+	var hits []searchTrace
+	var out []analysis.SearchQuery
 	added := 0
 	for _, q := range queries {
 		tsq := TSQuery(q)
@@ -766,14 +819,18 @@ func (a *Agent) searchResearch(ctx context.Context, reg *analysis.Registry, quer
 			a.Log.Warn("research search", "q", q, "err", err)
 			continue
 		}
-		h := hit{Query: q}
+		h := searchTrace{Query: q, Stage: stage, Found: []foundRef{}}
+		sq := analysis.SearchQuery{Tool: "search_research", Query: q, Stage: stage, FoundIDs: []string{}}
 		for _, r := range rows {
-			if added >= 5 {
-				break
-			}
 			id := fmt.Sprintf("R%d", r.ID)
 			if reg.Has(id) {
+				// Уже найден другим запросом — тоже подтверждает этот запрос.
+				sq.FoundIDs = append(sq.FoundIDs, id)
+				h.Found = append(h.Found, foundRef{ID: id, Title: r.Title})
 				continue
+			}
+			if added >= 5 {
+				break
 			}
 			note := fmt.Sprintf("стр. %d", r.Page)
 			if r.IsOutdated {
@@ -785,21 +842,26 @@ func (a *Agent) searchResearch(ctx context.Context, reg *analysis.Registry, quer
 			}
 			reg.Add(analysis.Evidence{ID: id, Type: "bank_research", Title: r.Title, URL: fmt.Sprintf("/research/%d", r.DocumentID),
 				Date: date, Excerpt: r.Content, Page: int(r.Page), Note: note})
-			h.Found = append(h.Found, id+" "+r.Title)
+			sq.FoundIDs = append(sq.FoundIDs, id)
+			h.Found = append(h.Found, foundRef{ID: id, Title: r.Title})
 			added++
 		}
 		hits = append(hits, h)
+		out = append(out, sq)
 	}
-	t.toolStep("search_research", "Поиск в аналитике Альфа-Банка", start, fmt.Sprintf("найдено фрагментов: %d", added), hits)
+	t.toolStep("search_research", "Поиск в аналитике Альфа-Банка", start,
+		fmt.Sprintf("запросов: %d, новых фрагментов: %d", len(hits), added), hits)
+	return out
 }
 
-func (a *Agent) searchNews(ctx context.Context, reg *analysis.Registry, exclude uuid.UUID, queries []string, t *tracer) {
+func (a *Agent) searchNews(ctx context.Context, reg *analysis.Registry, exclude uuid.UUID, queries []string, t *tracer) []analysis.SearchQuery {
 	if len(queries) == 0 {
-		return
+		return nil
 	}
 	start := time.Now()
 	n := 0
-	var found []string
+	var hits []searchTrace
+	var out []analysis.SearchQuery
 	for _, q := range queries {
 		tsq := TSQuery(q)
 		if tsq == "" {
@@ -809,6 +871,8 @@ func (a *Agent) searchNews(ctx context.Context, reg *analysis.Registry, exclude 
 		if err != nil {
 			continue
 		}
+		h := searchTrace{Query: q, Stage: "plan", Found: []foundRef{}}
+		sq := analysis.SearchQuery{Tool: "search_news", Query: q, Stage: "plan", FoundIDs: []string{}}
 		for _, r := range rows {
 			if n >= 3 {
 				break
@@ -817,10 +881,14 @@ func (a *Agent) searchNews(ctx context.Context, reg *analysis.Registry, exclude 
 			id := fmt.Sprintf("N%d", n)
 			reg.Add(analysis.Evidence{ID: id, Type: "related_news", Title: r.Title, URL: r.Url,
 				Date: r.PublishedAt.Format("2006-01-02"), Excerpt: r.Summary, Note: "источник: " + r.SourceName})
-			found = append(found, id+" "+r.Title)
+			sq.FoundIDs = append(sq.FoundIDs, id)
+			h.Found = append(h.Found, foundRef{ID: id, Title: r.Title})
 		}
+		hits = append(hits, h)
+		out = append(out, sq)
 	}
-	t.toolStep("search_news", "Поиск связанных новостей", start, fmt.Sprintf("найдено: %d", n), found)
+	t.toolStep("search_news", "Поиск связанных новостей", start, fmt.Sprintf("запросов: %d, найдено: %d", len(hits), n), hits)
+	return out
 }
 
 func fallbackQueries(cls *analysis.Classification, names map[string]string) []string {
@@ -923,6 +991,13 @@ func (a *Agent) RankTop(ctx context.Context, userID uuid.UUID, n int) (RankResul
 }
 
 // ---------------------------------------------------------------------------
+
+func yesNo(v bool) string {
+	if v {
+		return "да"
+	}
+	return "нет"
+}
 
 func firstRunes(s string, n int) string {
 	r := []rune(s)

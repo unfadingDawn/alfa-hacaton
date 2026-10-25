@@ -209,10 +209,14 @@ func (q *Queries) GetRun(ctx context.Context, id uuid.UUID) (AnalysisRun, error)
 }
 
 const tokensUsedSince = `-- name: TokensUsedSince :one
-SELECT coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint AS tokens
-FROM analysis_runs WHERE started_at >= $1
+SELECT (
+  (SELECT coalesce(sum(prompt_tokens + completion_tokens), 0) FROM analysis_runs WHERE started_at >= $1) +
+  (SELECT coalesce(sum(tokens), 0) FROM analysis_questions WHERE created_at >= $1 AND NOT cached) +
+  (SELECT coalesce(sum(tokens), 0) FROM support_messages WHERE created_at >= $1 AND NOT cached)
+)::bigint AS tokens
 `
 
+// Дневной расход токенов: запуски агента, вопросы к анализам и помощник поддержки.
 func (q *Queries) TokensUsedSince(ctx context.Context, since time.Time) (int64, error) {
 	row := q.db.QueryRow(ctx, tokensUsedSince, since)
 	var tokens int64

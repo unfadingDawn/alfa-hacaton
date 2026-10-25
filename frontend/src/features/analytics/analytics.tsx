@@ -1,5 +1,6 @@
 "use client";
 
+import Link from "next/link";
 import { useMemo, useState } from "react";
 import {
   Bar,
@@ -180,12 +181,17 @@ export function AnalyticsView() {
         title="Аналитика"
         lead="Как новости отражаются на вашей компании: по месяцам, по важности и по типу влияния. Все показатели считаются по новостям и оценкам в системе."
         action={
-          <Select aria-label="Период" value={period} onChange={(e) => setPeriod(e.target.value)} className="w-[180px]">
-            <option value="30d">30 дней</option>
-            <option value="90d">3 месяца</option>
-            <option value="180d">6 месяцев</option>
-            <option value="365d">12 месяцев</option>
-          </Select>
+          <div className="flex flex-wrap items-center gap-2">
+            <Button asChild variant="outline" size="sm">
+              <Link href="/analytics/quality">Качество AI</Link>
+            </Button>
+            <Select aria-label="Период" value={period} onChange={(e) => setPeriod(e.target.value)} className="w-[180px]">
+              <option value="30d">30 дней</option>
+              <option value="90d">3 месяца</option>
+              <option value="180d">6 месяцев</option>
+              <option value="365d">12 месяцев</option>
+            </Select>
+          </div>
         }
       />
       {error ? (

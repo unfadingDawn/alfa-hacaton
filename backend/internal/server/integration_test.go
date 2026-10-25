@@ -21,6 +21,12 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
+
+	"github.com/alfainsight/backend/internal/db/dbq"
+	"github.com/alfainsight/backend/internal/news"
 	"github.com/alfainsight/backend/internal/platform/config"
 	"github.com/alfainsight/backend/internal/platform/db"
 	"github.com/alfainsight/backend/migrations"
@@ -32,6 +38,7 @@ type mockLLM struct {
 	mu        sync.Mutex
 	roleSeen  []string
 	modelSeen []string
+	questions []string
 }
 
 func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
@@ -53,12 +60,29 @@ func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
 	m.mu.Unlock()
 	var content string
 	switch {
+	case strings.Contains(user, "СПРАВКА:"):
+		if strings.Contains(user, "акции") {
+			content = `{"answer":"Покупайте акции банков.","points":[],"not_in_kb":false,"out_of_scope":true}`
+		} else {
+			content = `{"answer":"Роль меняется в «Личный кабинет». Ещё можно нажать «Сменить линзу» в шапке.","points":[
+			{"text":"Откройте «Личный кабинет» и на вкладке «Профиль» выберите «Роль в принятии решений».","source_ids":["H2"]},
+			{"text":"Позвоните менеджеру банка.","source_ids":[]}],"not_in_kb":false,"out_of_scope":false}`
+		}
+	case strings.Contains(user, "ВОПРОС ПОЛЬЗОВАТЕЛЯ"):
+		m.mu.Lock()
+		m.questions = append(m.questions, user)
+		m.mu.Unlock()
+		content = `{"answer":"Оценка высокая: у компании есть кредиты, а ставка не снижается.","points":[
+		{"text":"У компании есть кредитные продукты","source_ids":["C:has_loan"],"basis":"company_data"},
+		{"text":"Банк ожидает снижения ставки","source_ids":["R999999"],"basis":"bank_view"}],
+		"not_in_sources":"","out_of_scope":false}`
 	case strings.Contains(user, "Типы событий"):
 		content = `{"topics":[{"code":"monetary_policy","confidence":0.9}],"event_type":"monetary_policy_decision",
 		"summary":"Банк России сохранил ставку.","key_facts":[{"text":"Ставка 14%","confirmed":true}],"dates":[],"entities":[],
 		"indicators":[],"okved_divisions":[],"regions":[],"countries":[],"commodities":[],"is_business_relevant":true}`
 	case strings.Contains(user, "Составь план"):
-		content = `{"focus_questions":["Как изменится стоимость долга?"],"research_queries":["ключевая ставка пауза"],
+		// Рассуждение модели в <think> не должно попадать в трассу и ответ.
+		content = `<think>СКРЫТОЕ-РАССУЖДЕНИЕ про план</think>{"focus_questions":["Как изменится стоимость долга?"],"research_queries":["ключевая ставка пауза","ковенанты облигаций"],
 		"news_queries":[],"company_fact_ids":["C:has_loan"],"hypotheses":["Дорогие кредиты"]}`
 	case strings.Contains(user, "ЧЕРНОВИК"):
 		content = `{"passed":true,"issues":[],"additional_research_queries":[],"comment":"ok"}`
@@ -79,7 +103,10 @@ func (m *mockLLM) handler(w http.ResponseWriter, r *http.Request) {
 		"why_it_matters":"У компании есть кредитные продукты (%s)","why_it_matters_source_ids":["C:has_loan"],
 		"potential_impact":"Стоимость долга останется высокой",
 		"risks":[{"title":"Дорогой долг","description":"Нет снижения ставок","likelihood":"high","horizon":"short","basis":"bank_view","source_ids":["%s"]}],
-		"opportunities":[],"recommended_actions":[{"action":"Пересмотреть график рефинансирования","rationale":"","owner":"CFO","source_ids":[]}],
+		"opportunities":[],"recommended_actions":[{"action":"Пересмотреть график рефинансирования","object":"кредитная линия",
+		"rationale":"стоимость долга не снизится","owner":"Финансовый директор","horizon":"short","source_ids":["C:has_loan"]},
+		{"action":"Следить за развитием ситуации","object":"ставка","rationale":"важно","owner":"CFO","horizon":"short","source_ids":[]}],
+		"used_company_factors":[{"fact_id":"C:has_loan","mechanism":"сохранение ставки удерживает стоимость обслуживания кредитов"}],
 		"bank_view":[{"text":"Аналитики ждут паузы","source_ids":["%s","R999999"]}],
 		"assumptions":[],"uncertainty_notes":[]}`, role, rid, rid)
 	case strings.Contains(user, "Новости:"):
@@ -163,6 +190,17 @@ func TestEndToEnd(t *testing.T) {
 	if err := db.Migrate(pool, migrations.FS); err != nil {
 		t.Fatal(err)
 	}
+	// Все миграции обратимы: откат до пустой схемы и повторное применение.
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	goose.SetBaseFS(migrations.FS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.DownTo(sqlDB, ".", 0); err != nil {
+		t.Fatalf("откат миграций: %v", err)
+	}
+	_ = sqlDB.Close()
+	if err := db.Migrate(pool, migrations.FS); err != nil {
+		t.Fatalf("повторное применение миграций: %v", err)
+	}
 	// Тестовые записи (не данные кейса): две компании, материал банка, новость.
 	fixture := `
 	INSERT INTO companies (id, okved_code, okved_name, okved_division, has_loan, revenue, region, city, source_row)
@@ -187,7 +225,7 @@ func TestEndToEnd(t *testing.T) {
 		LLM: config.LLM{BaseURL: llmSrv.URL, APIKey: "sk-test", ModelFast: "google/gemma-4-26b-a4b-it",
 			ModelReasoning: "z-ai/glm-5.3-flash", ModelWriter: "qwen/qwen3.6-35b-a3b", Timeout: 10 * time.Second,
 			DailyTokenBudget: 1_000_000, DailyCallLimit: 100, PerMinuteLimit: 100, MaxOutputTokens: 2200, MaxInputChars: 24000,
-			PerUserHourly: 10, JSONMode: true}}
+			PerUserHourly: 10, QuestionsPerAnalysis: 2, QuestionsPerUserDaily: 30, SupportPerUserDaily: 10, JSONMode: true}}
 	app := New(cfg, pool, slog.New(slog.NewTextHandler(io.Discard, nil)))
 	if _, err := app.Agent.TagKeywordTopics(ctx); err != nil {
 		t.Fatal(err)
@@ -265,10 +303,35 @@ func TestEndToEnd(t *testing.T) {
 	for _, s := range steps {
 		names = append(names, s.(map[string]any)["name"].(string))
 	}
-	if strings.Join(names, ",") != "classify,company_profile,plan,search_research,draft,self_check" {
+	if strings.Join(names, ",") != "classify,company_profile,plan,search_research,draft,fact_check_draft,self_check" {
 		t.Fatalf("трасса агента: %v", names)
 	}
 	runID := res["run"].(map[string]any)["id"].(string)
+
+	// Раскрытая трасса: план, источники (найденные, использованные, пустые запросы),
+	// итог самопроверки — без скрытых рассуждений модели.
+	rawRes, _ := json.Marshal(res)
+	if strings.Contains(string(rawRes), "СКРЫТОЕ-РАССУЖДЕНИЕ") {
+		t.Fatal("скрытое рассуждение модели попало в ответ API")
+	}
+	result := res["analysis"].(map[string]any)["result"].(map[string]any)
+	srep := result["sources_report"].(map[string]any)
+	if len(srep["empty_queries"].([]any)) != 1 || len(srep["queries"].([]any)) != 2 {
+		t.Fatalf("отчёт об источниках: %v", srep)
+	}
+	var usedR bool
+	for _, x := range srep["sources"].([]any) {
+		m := x.(map[string]any)
+		if strings.HasPrefix(m["id"].(string), "R") && m["used"].(bool) && m["query"] == "ключевая ставка пауза" && len(m["sections"].([]any)) > 0 {
+			usedR = true
+		}
+	}
+	if !usedR {
+		t.Fatalf("материал банка должен быть связан с запросом и разделами анализа: %v", srep["sources"])
+	}
+	if rev := result["revision"].(map[string]any); rev["applied"].(bool) || rev["note"] == "" {
+		t.Fatalf("итог самопроверки: %v", rev)
+	}
 
 	// Повторный запрос — из кэша, без обращения к модели.
 	if res2 := cfo.must("POST", "/api/articles/"+articleID+"/analyze", nil, 200); !res2["cached"].(bool) || mock.calls.Load() != callsAfterFirst {
@@ -277,6 +340,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Та же новость для руководителя закупок: другая линза, классификация не повторяется.
 	proc.must("POST", "/api/articles/"+articleID+"/analyze", nil, 200)
+	var before int32
 	if got := mock.calls.Load() - callsAfterFirst; got != 3 {
 		t.Fatalf("для второй роли ожидалось 3 запроса (без повторной классификации), было %d", got)
 	}
@@ -293,12 +357,118 @@ func TestEndToEnd(t *testing.T) {
 		}
 	}
 
+	// Уточняющие вопросы к готовому анализу.
+	qpath := "/api/articles/" + articleID + "/analysis/questions"
+	if code, out := other.do("POST", qpath, map[string]any{"question": "Почему такая оценка?"}); code != 409 ||
+		out["error"].(map[string]any)["code"] != "no_analysis" {
+		t.Fatalf("вопрос без своего анализа: %d %v", code, out)
+	}
+	other.must("GET", qpath, nil, 409)
+	hist := cfo.must("GET", qpath, nil, 200)
+	if len(hist["items"].([]any)) != 0 || len(hist["quick_questions"].([]any)) != 4 {
+		t.Fatalf("пустая история и быстрые вопросы: %v", hist)
+	}
+	analysisID := hist["analysis_id"].(string)
+	before = mock.calls.Load()
+	det := cfo.must("POST", qpath, map[string]any{"preset": "company_factors", "analysis_id": analysisID}, 200)["item"].(map[string]any)
+	if det["method"] != "deterministic" || mock.calls.Load() != before ||
+		!strings.Contains(fmt.Sprint(det["source_ids"]), "C:has_loan") {
+		t.Fatalf("признаки компании отвечаются без модели и со ссылкой на факт: %v", det)
+	}
+	ask := cfo.must("POST", qpath, map[string]any{"question": "Почему такая оценка?"}, 200)
+	item := ask["item"].(map[string]any)
+	if ask["cached"].(bool) || item["method"] != "llm" || mock.calls.Load() != before+1 || item["preset"] != "why_score" {
+		t.Fatalf("вопрос к модели: %v", ask)
+	}
+	ans := item["answer"].(map[string]any)
+	pts := ans["points"].([]any)
+	if src := fmt.Sprint(item["source_ids"]); strings.Contains(src, "R999999") || !strings.Contains(src, "C:has_loan") ||
+		pts[1].(map[string]any)["basis"] != "model_inference" || len(ans["sources"].([]any)) != 1 {
+		t.Fatalf("ответ должен опираться только на реестр анализа: %v", ans)
+	}
+	mock.mu.Lock()
+	qprompt := mock.questions[len(mock.questions)-1]
+	mock.mu.Unlock()
+	if !strings.Contains(qprompt, "Финансовый директор") || !strings.Contains(qprompt, "[C:has_loan]") {
+		t.Fatal("в промпт вопроса должны попасть роль и реестр источников анализа")
+	}
+	if c := cfo.must("POST", qpath, map[string]any{"question": "  почему ТАКАЯ оценка "}, 200); !c["cached"].(bool) || mock.calls.Load() != before+1 {
+		t.Fatalf("одинаковый вопрос должен браться из кэша: %v", c)
+	}
+	cfo.must("POST", qpath, map[string]any{"question": "аб"}, 422)
+	cfo.must("POST", qpath, map[string]any{"preset": "unknown"}, 422)
+	if code, out := cfo.do("POST", qpath, map[string]any{"question": "Что дальше?", "analysis_id": "00000000-0000-0000-0000-000000000001"}); code != 409 ||
+		out["error"].(map[string]any)["code"] != "stale_analysis" {
+		t.Fatalf("вопрос к устаревшему анализу: %d %v", code, out)
+	}
+	cfo.must("POST", qpath, map[string]any{"preset": "check_first"}, 200)
+	if code, out := cfo.do("POST", qpath, map[string]any{"question": "Как это повлияет на ковенанты?"}); code != 429 ||
+		out["error"].(map[string]any)["code"] != "question_limit" || mock.calls.Load() != before+2 {
+		t.Fatalf("лимит вопросов на анализ: %d %v", code, out)
+	}
+	hist = cfo.must("GET", qpath, nil, 200)
+	lim := hist["limits"].(map[string]any)
+	if len(hist["items"].([]any)) != 3 || lim["used_for_analysis"].(float64) != 2 || lim["per_analysis"].(float64) != 2 {
+		t.Fatalf("история вопросов и лимиты: %v", hist)
+	}
+	qall := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)
+	if acc := qall["accuracy"].(map[string]any); acc["analyses_checked"].(float64) != 1 || acc["avg_source_coverage"] == nil ||
+		acc["content_levels"].(map[string]any)["title_only"].(float64) != 1 {
+		t.Fatalf("метрики фактологической точности: %v", acc)
+	}
+	if cnt := qall["content"].(map[string]any); cnt["company_factors_rate"].(float64) != 100 || cnt["generic_actions_removed"].(float64) != 1 ||
+		cnt["concrete_actions"].(float64) != 1 {
+		t.Fatalf("метрики содержательности: %v", cnt)
+	}
+	qq := qall["questions"].(map[string]any)
+	if qq["total"].(float64) != 3 || qq["llm_calls"].(float64) != 2 || qq["deterministic"].(float64) != 1 ||
+		qq["cache_hits"].(float64) != 1 || qq["grounded_rate"].(float64) != 100 {
+		t.Fatalf("метрики вопросов: %v", qq)
+	}
+
+	// ИИ-помощник поддержки: частые вопросы без модели, проверка ответа модели по справке, кэш.
+	sup := cfo.must("GET", "/api/support/assistant", nil, 200)
+	if len(sup["quick_questions"].([]any)) != 4 || sup["llm_available"] != true {
+		t.Fatalf("помощник: %v", sup)
+	}
+	before = mock.calls.Load()
+	kb := cfo.must("POST", "/api/support/assistant", map[string]any{"preset": "run_analysis"}, 200)["item"].(map[string]any)
+	if kb["method"] != "kb" || mock.calls.Load() != before {
+		t.Fatalf("частый вопрос отвечается статьёй справки без модели: %v", kb)
+	}
+	ai := cfo.must("POST", "/api/support/assistant", map[string]any{"question": "Как поменять свою роль?"}, 200)["item"].(map[string]any)
+	aans := ai["answer"].(map[string]any)
+	rawAns, _ := json.Marshal(map[string]any{"answer": aans["answer"], "points": aans["points"]})
+	if ai["method"] != "llm" || mock.calls.Load() != before+1 || strings.Contains(string(rawAns), "Сменить линзу") ||
+		strings.Contains(string(rawAns), "менеджеру") || len(aans["points"].([]any)) != 1 ||
+		len(aans["checks"].(map[string]any)["unknown_ui"].([]any)) != 1 {
+		t.Fatalf("ответ помощника проверяется по справке: %s", rawAns)
+	}
+	if c := proc.must("POST", "/api/support/assistant", map[string]any{"question": "как поменять свою роль"}, 200); !c["cached"].(bool) || mock.calls.Load() != before+1 {
+		t.Fatalf("одинаковый вопрос другого пользователя — из кэша: %v", c)
+	}
+	oos := cfo.must("POST", "/api/support/assistant", map[string]any{"question": "Какие акции купить на этой неделе?"}, 200)["item"].(map[string]any)
+	if !oos["answer"].(map[string]any)["out_of_scope"].(bool) || strings.Contains(fmt.Sprint(oos["answer"]), "Покупайте") {
+		t.Fatalf("вопрос вне темы: %v", oos)
+	}
+	if h := cfo.must("GET", "/api/support/assistant", nil, 200); len(h["items"].([]any)) != 3 {
+		t.Fatalf("история помощника: %v", h["items"])
+	}
+	if s := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)["support"].(map[string]any); s["total"].(float64) != 3 || s["from_kb"].(float64) != 1 {
+		t.Fatalf("метрики помощника: %v", s)
+	}
+
 	// Сохранение и отзыв.
 	cfo.must("POST", "/api/articles/"+articleID+"/save", nil, 200)
 	if f := cfo.must("GET", "/api/feed?saved=true", nil, 200); f["total"].(float64) != 1 {
 		t.Fatal("сохранённые")
 	}
 	cfo.must("POST", "/api/articles/"+articleID+"/feedback", map[string]any{"rating": 1}, 200)
+	quality := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)
+	if quality["runs"].(map[string]any)["total"].(float64) < 1 ||
+		quality["feedback"].(map[string]any)["helpfulness_rate"].(float64) != 100 {
+		t.Fatalf("метрики качества: %v", quality)
+	}
 	cfo.must("DELETE", "/api/articles/"+articleID+"/save", nil, 200)
 
 	// Разграничение доступа.
@@ -328,7 +498,7 @@ func TestEndToEnd(t *testing.T) {
 
 	// Ошибка лимита провайдера: понятный ответ и пауза без повторов.
 	mock.fail429.Store(true)
-	before := mock.calls.Load()
+	before = mock.calls.Load()
 	if code, out := other.do("POST", "/api/articles/"+articleID+"/analyze", nil); code != 429 ||
 		out["error"].(map[string]any)["code"] != "llm_rate_limited" {
 		t.Fatalf("429 от провайдера: %d %v", code, out)
@@ -363,9 +533,102 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal("риски из полного анализа должны попасть на главную")
 	}
 
+	// Полнота источника и покрытие источниками в полном анализе.
+	if insight["source_completeness"].(map[string]any)["level"] != "title_only" ||
+		insight["source_coverage"].(map[string]any)["total"].(float64) == 0 || insight["fact_check"] == nil {
+		t.Fatalf("полнота источника, покрытие и проверка фактов: %v", insight)
+	}
+
+	testIngestion(t, ctx, pool, app)
+
 	// Выход.
 	cfo.must("POST", "/api/auth/logout", nil, 200)
 	if code, _ := cfo.do("GET", "/api/me", nil); code != 401 {
 		t.Fatal("после выхода доступ должен закрываться")
+	}
+}
+
+// testIngestion — дедупликация, обновление публикаций и полнота текста на настоящей БД.
+func testIngestion(t *testing.T, ctx context.Context, pool *pgxpool.Pool, app *App) {
+	q := dbq.New(pool)
+	src := func(code string) dbq.Source {
+		s, err := q.GetSourceByCode(ctx, code)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	tass, interfax, cbr := src("tass"), src("interfax"), src("cbr_press")
+	now := time.Now()
+	store := func(s dbq.Source, title, desc, link, full string) news.StoreResult {
+		t.Helper()
+		r, err := app.Ingestor.Store(ctx, s, news.Item{Title: title, Description: desc, Link: link, FullText: full, Published: now})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return r
+	}
+	level := func(id any) (string, string) {
+		var lvl, body string
+		if err := pool.QueryRow(ctx, `SELECT content_level, body FROM articles WHERE id = $1`, id).Scan(&lvl, &body); err != nil {
+			t.Fatal(err)
+		}
+		return lvl, body
+	}
+
+	// Одна новость из нескольких источников: близкий заголовок другого издания.
+	r := store(tass, "Банк России сохранил ключевую ставку на уровне 14% годовых",
+		"Совет директоров Банка России принял решение сохранить ключевую ставку на уровне 14% годовых.", "https://tass.test/1", "")
+	if !r.Inserted || r.DuplicateOf == nil {
+		t.Fatalf("тот же факт из другого источника должен стать дубликатом: %+v", r)
+	}
+	// Похожая, но другая новость: другое направление и число.
+	if r := store(interfax, "ЦБ повысил ключевую ставку до 15%", "Банк России неожиданно повысил ставку до 15% годовых.", "https://ifx.test/1", ""); r.DuplicateOf != nil {
+		t.Fatal("повышение ставки — другое событие, не дубликат сохранения")
+	}
+	// Разный регистр написания.
+	a := store(tass, "МИНФИН РАЗМЕСТИЛ ОФЗ НА 50 МЛРД РУБЛЕЙ", "", "https://tass.test/2", "")
+	if r := store(interfax, "Минфин разместил ОФЗ на 50 млрд рублей", "Аукцион прошёл успешно.", "https://ifx.test/2", ""); r.DuplicateOf == nil || *r.DuplicateOf != a.ID {
+		t.Fatalf("регистр не должен мешать дедупликации: %+v", r)
+	}
+	if r := store(interfax, "Минфин разместил ОФЗ на 30 млрд рублей", "", "https://ifx.test/3", ""); r.DuplicateOf != nil {
+		t.Fatal("другая сумма размещения — другое событие")
+	}
+	if lvl, _ := level(a.ID); lvl != "title_only" {
+		t.Fatalf("без анонса — только заголовок, получено %s", lvl)
+	}
+
+	// Обновление старой публикации: та же ссылка, новый текст.
+	orig := store(interfax, "Сбербанк изменил ставки по вкладам", "Банк изменил ставки по ряду вкладов с понедельника.", "https://ifx.test/4", "")
+	if _, err := pool.Exec(ctx, `UPDATE articles SET classification = '{"x":1}', classified_at = now() WHERE id = $1`, orig.ID); err != nil {
+		t.Fatal(err)
+	}
+	upd := store(interfax, "Сбербанк повысил ставки по вкладам до 18%", "Банк повысил ставки по вкладам до 18% годовых с понедельника.", "https://ifx.test/4", "")
+	if !upd.Updated || upd.ID != orig.ID {
+		t.Fatalf("та же ссылка с новым текстом — обновление, а не новая новость: %+v", upd)
+	}
+	var title string
+	var classified, updatedAt *time.Time
+	if err := pool.QueryRow(ctx, `SELECT title, classified_at, updated_at FROM articles WHERE id = $1`, orig.ID).Scan(&title, &classified, &updatedAt); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(title, "18%") || classified != nil || updatedAt == nil {
+		t.Fatalf("обновлённая публикация: заголовок %q, классификация сброшена %v, updated_at %v", title, classified == nil, updatedAt)
+	}
+	if again := store(interfax, "Сбербанк повысил ставки по вкладам до 18%", "Банк повысил ставки по вкладам до 18% годовых с понедельника.", "https://ifx.test/4", ""); again.Inserted || again.Updated {
+		t.Fatalf("повтор без изменений ничего не меняет: %+v", again)
+	}
+
+	// Полный текст: только если источник передаёт его в ленте и это разрешено.
+	full := strings.Repeat("Банк России опубликовал решение по ключевой ставке и сопроводительный комментарий. ", 6)
+	if r := store(cbr, "Банк России опубликовал резюме обсуждения ключевой ставки", "Резюме обсуждения ключевой ставки за сентябрь опубликовано на сайте.", "https://cbr.test/9", full); true {
+		if lvl, body := level(r.ID); lvl != "full_text" || body == "" {
+			t.Fatalf("официальная лента с разрешённым полным текстом: %s", lvl)
+		}
+	}
+	if r := store(tass, "Росстат опубликовал данные о промышленном производстве", "Промышленное производство в сентябре выросло на 2,1% в годовом выражении.", "https://tass.test/9", full); true {
+		if lvl, body := level(r.ID); lvl != "summary" || body != "" {
+			t.Fatalf("полный текст СМИ не сохраняется без разрешения: %s %q", lvl, body)
+		}
 	}
 }

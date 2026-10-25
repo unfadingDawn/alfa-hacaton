@@ -25,6 +25,7 @@ import (
 	"github.com/alfainsight/backend/internal/platform/config"
 	"github.com/alfainsight/backend/internal/platform/httpx"
 	"github.com/alfainsight/backend/internal/semantic"
+	"github.com/alfainsight/backend/internal/support"
 	"github.com/alfainsight/backend/internal/users"
 )
 
@@ -52,6 +53,7 @@ func New(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) *App {
 
 	compSvc := &companies.Service{Q: q}
 	ag := &agent.Agent{Q: q, LLM: client, Companies: compSvc, Log: log, PerUserHourly: cfg.LLM.PerUserHourly,
+		QuestionsPerAnalysis: cfg.LLM.QuestionsPerAnalysis, QuestionsPerUserDaily: cfg.LLM.QuestionsPerUserDaily,
 		Models:          agent.Models{Fast: cfg.LLM.ModelFast, Reasoning: cfg.LLM.ModelReasoning, Writer: cfg.LLM.ModelWriter},
 		SemanticEnabled: cfg.Semantic.Enabled, SemanticRefresh: cfg.Semantic.RefreshInterval,
 		SemanticConfig: semantic.Config{MaxDocuments: cfg.Semantic.MaxDocuments, MaxFeatures: cfg.Semantic.MaxFeatures,
@@ -66,6 +68,8 @@ func New(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) *App {
 	compH := &companies.Handler{Q: q, Svc: compSvc, Log: log}
 	insH := &insights.Handler{Q: q, Agent: ag, Ingestor: ingestor, Log: log}
 	anH := &analytics.Handler{Q: q, Agent: ag, LLM: client, Cfg: cfg, Log: log}
+	supH := &support.Handler{A: &support.Assistant{Q: q, LLM: client, Model: cfg.LLM.ModelFast, DailyLimit: cfg.LLM.SupportPerUserDaily,
+		Log: log, MinGrounded: 0.55}, Log: log, OnAgentErr: func(w http.ResponseWriter, err error) { insights.WriteAgentError(w, log, err) }}
 
 	r := chi.NewRouter()
 	r.Use(middleware.RequestID, middleware.RealIP, middleware.Recoverer, requestLogger(log))
@@ -90,6 +94,7 @@ func New(cfg config.Config, pool *pgxpool.Pool, log *slog.Logger) *App {
 			compH.Routes(r)
 			insH.Routes(r)
 			anH.Routes(r)
+			supH.Routes(r)
 		})
 	})
 

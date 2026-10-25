@@ -19,8 +19,12 @@ type Item struct {
 	Link        string
 	GUID        string
 	Description string
-	Categories  []string
-	Published   time.Time
+	// FullText — полный текст, если источник сам передаёт его в ленте
+	// (content:encoded, yandex:full-text, Atom content). Сохраняется только
+	// для источников с политикой full_text_policy = 'feed'.
+	FullText   string
+	Categories []string
+	Published  time.Time
 }
 
 type rssDoc struct {
@@ -30,6 +34,8 @@ type rssDoc struct {
 			Link        string   `xml:"link"`
 			GUID        string   `xml:"guid"`
 			Description string   `xml:"description"`
+			Encoded     string   `xml:"http://purl.org/rss/1.0/modules/content/ encoded"`
+			YandexFull  string   `xml:"http://news.yandex.ru full-text"`
 			Categories  []string `xml:"category"`
 			PubDate     string   `xml:"pubDate"`
 			Date        string   `xml:"http://purl.org/dc/elements/1.1/ date"`
@@ -98,8 +104,12 @@ func Parse(data []byte) ([]Item, error) {
 			if !ok || link == "" || strings.TrimSpace(it.Title) == "" {
 				continue
 			}
+			full := it.Encoded
+			if strings.TrimSpace(full) == "" {
+				full = it.YandexFull
+			}
 			out = append(out, Item{Title: CleanText(it.Title), Link: link, GUID: strings.TrimSpace(it.GUID),
-				Description: CleanText(it.Description), Categories: trimAll(it.Categories), Published: pub})
+				Description: CleanText(it.Description), FullText: CleanText(full), Categories: trimAll(it.Categories), Published: pub})
 		}
 		return out, nil
 	}
@@ -134,8 +144,12 @@ func Parse(data []byte) ([]Item, error) {
 		if desc == "" {
 			desc = e.Content
 		}
+		full := ""
+		if e.Summary != "" && e.Content != "" {
+			full = e.Content
+		}
 		out = append(out, Item{Title: CleanText(e.Title), Link: link, GUID: e.ID, Description: CleanText(desc),
-			Categories: trimAll(cats), Published: pub})
+			FullText: CleanText(full), Categories: trimAll(cats), Published: pub})
 	}
 	return out, nil
 }

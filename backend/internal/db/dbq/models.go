@@ -11,6 +11,30 @@ import (
 	"github.com/google/uuid"
 )
 
+type AnalysisQuestion struct {
+	ID               uuid.UUID       `json:"id"`
+	AnalysisID       uuid.UUID       `json:"analysis_id"`
+	UserID           uuid.UUID       `json:"user_id"`
+	AnalysisHash     string          `json:"analysis_hash"`
+	Question         string          `json:"question"`
+	QuestionNorm     string          `json:"question_norm"`
+	Preset           *string         `json:"preset"`
+	Method           string          `json:"method"`
+	Status           string          `json:"status"`
+	Answer           json.RawMessage `json:"answer"`
+	SourceIds        []string        `json:"source_ids"`
+	Model            string          `json:"model"`
+	PromptVersion    string          `json:"prompt_version"`
+	PromptTokens     int32           `json:"prompt_tokens"`
+	CompletionTokens int32           `json:"completion_tokens"`
+	Tokens           int32           `json:"tokens"`
+	DurationMs       int32           `json:"duration_ms"`
+	Cached           bool            `json:"cached"`
+	CacheHits        int32           `json:"cache_hits"`
+	Error            *string         `json:"error"`
+	CreatedAt        time.Time       `json:"created_at"`
+}
+
 type AnalysisRun struct {
 	ID               uuid.UUID       `json:"id"`
 	Kind             string          `json:"kind"`
@@ -44,6 +68,8 @@ type Article struct {
 	ClassifiedAt   *time.Time      `json:"classified_at"`
 	Classification json.RawMessage `json:"classification"`
 	Tsv            interface{}     `json:"tsv"`
+	ContentLevel   *string         `json:"content_level"`
+	UpdatedAt      *time.Time      `json:"updated_at"`
 }
 
 type ArticleTopic struct {
@@ -202,6 +228,26 @@ type Source struct {
 	LastFetchAt     *time.Time `json:"last_fetch_at"`
 	LastFetchStatus *string    `json:"last_fetch_status"`
 	CategoryFilter  []string   `json:"category_filter"`
+	FullTextPolicy  string     `json:"full_text_policy"`
+}
+
+type SupportMessage struct {
+	ID            uuid.UUID       `json:"id"`
+	UserID        uuid.UUID       `json:"user_id"`
+	Question      string          `json:"question"`
+	QuestionNorm  string          `json:"question_norm"`
+	Preset        *string         `json:"preset"`
+	Method        string          `json:"method"`
+	Status        string          `json:"status"`
+	Answer        json.RawMessage `json:"answer"`
+	SourceIds     []string        `json:"source_ids"`
+	Model         string          `json:"model"`
+	PromptVersion string          `json:"prompt_version"`
+	Tokens        int32           `json:"tokens"`
+	DurationMs    int32           `json:"duration_ms"`
+	Cached        bool            `json:"cached"`
+	Error         *string         `json:"error"`
+	CreatedAt     time.Time       `json:"created_at"`
 }
 
 type Topic struct {

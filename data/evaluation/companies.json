@@ -1,0 +1,96 @@
+{
+  "version": "holdout-2026-10-25.1",
+  "companies": [
+    {
+      "id": "eval-metal",
+      "name": "Обезличенный производитель металлоконструкций",
+      "industry": "производство металлических изделий",
+      "okved_division": "25",
+      "region": "Свердловская область",
+      "countries": ["Китай", "Казахстан"],
+      "topics": ["metals", "commodities", "trade", "fx", "credit", "energy"],
+      "facts": [
+        {"id": "C:okved", "label": "ОКВЭД", "value": "25 — производство металлических изделий", "topics": ["metals"]},
+        {"id": "C:has_loan", "label": "Кредитные продукты", "value": "да", "topics": ["credit", "debt_market"]},
+        {"id": "C:fts", "label": "Внешняя торговля", "value": "импорт из Китая и экспорт в Казахстан", "topics": ["trade", "fx", "logistics"]},
+        {"id": "C:energy_cost", "label": "Энергоёмкость", "value": "производство зависит от тарифов на электроэнергию", "topics": ["energy"]}
+      ],
+      "data_gaps": ["Нет данных о доле компании на рынке"]
+    },
+    {
+      "id": "eval-retail",
+      "name": "Обезличенная сеть товаров для дома",
+      "industry": "розничная торговля",
+      "okved_division": "47",
+      "region": "Москва",
+      "countries": ["Китай", "Турция"],
+      "topics": ["retail_wholesale", "consumer_demand", "trade", "fx", "logistics", "inflation"],
+      "facts": [
+        {"id": "C:okved", "label": "ОКВЭД", "value": "47 — розничная торговля", "topics": ["retail_wholesale", "consumer_demand"]},
+        {"id": "C:fts", "label": "Импорт", "value": "значимая часть ассортимента поставляется из Китая и Турции", "topics": ["trade", "fx", "logistics"]},
+        {"id": "C:suppliers", "label": "Поставщики", "value": "поставщики потребительских товаров и логистические компании", "topics": ["logistics", "consumer_demand"]}
+      ],
+      "data_gaps": ["Нет данных о валюте контрактов"]
+    },
+    {
+      "id": "eval-agro",
+      "name": "Обезличенный агрохолдинг",
+      "industry": "выращивание зерновых культур",
+      "okved_division": "01",
+      "region": "Краснодарский край",
+      "countries": ["Египет"],
+      "topics": ["agriculture", "commodities", "trade", "logistics", "inflation"],
+      "facts": [
+        {"id": "C:okved", "label": "ОКВЭД", "value": "01 — растениеводство", "topics": ["agriculture"]},
+        {"id": "C:fts", "label": "Экспорт", "value": "поставки зерна в Египет", "topics": ["trade", "logistics", "agriculture"]},
+        {"id": "C:has_guarantee", "label": "Банковские гарантии", "value": "да", "topics": ["credit", "regulation"]}
+      ],
+      "data_gaps": ["Нет данных о застрахованной площади посевов"]
+    },
+    {
+      "id": "eval-logistics",
+      "name": "Обезличенный грузовой перевозчик",
+      "industry": "автомобильные грузовые перевозки",
+      "okved_division": "49",
+      "region": "Республика Татарстан",
+      "countries": ["Казахстан"],
+      "topics": ["logistics", "oil_gas", "credit", "trade", "labor"],
+      "facts": [
+        {"id": "C:okved", "label": "ОКВЭД", "value": "49 — сухопутный транспорт", "topics": ["logistics"]},
+        {"id": "C:has_leasing", "label": "Лизинг", "value": "автопарк частично приобретён в лизинг", "topics": ["credit", "logistics"]},
+        {"id": "C:fuel_cost", "label": "Топливо", "value": "топливо является существенной операционной статьёй", "topics": ["oil_gas", "logistics"]},
+        {"id": "C:fts", "label": "Международные перевозки", "value": "маршруты включают Казахстан", "topics": ["trade", "logistics"]}
+      ],
+      "data_gaps": ["Нет разбивки затрат по типам топлива"]
+    },
+    {
+      "id": "eval-it",
+      "name": "Обезличенный разработчик корпоративного ПО",
+      "industry": "разработка программного обеспечения",
+      "okved_division": "62",
+      "region": "Новосибирская область",
+      "countries": [],
+      "topics": ["technology", "regulation", "labor", "consumer_demand"],
+      "facts": [
+        {"id": "C:okved", "label": "ОКВЭД", "value": "62 — разработка программного обеспечения", "topics": ["technology"]},
+        {"id": "C:payroll", "label": "Персонал", "value": "основная часть расходов связана с ИТ-специалистами", "topics": ["labor", "technology"]}
+      ],
+      "data_gaps": ["Нет данных о структуре выручки", "Нет данных о крупнейших заказчиках", "Нет сведений о внешней торговле"]
+    },
+    {
+      "id": "eval-pharma",
+      "name": "Обезличенный производитель лекарств",
+      "industry": "производство фармацевтических субстанций и препаратов",
+      "okved_division": "21",
+      "region": "Калужская область",
+      "countries": ["Индия", "Китай"],
+      "topics": ["regulation", "trade", "logistics", "fx", "credit"],
+      "facts": [
+        {"id": "C:okved", "label": "ОКВЭД", "value": "21 — производство лекарственных средств", "topics": ["regulation"]},
+        {"id": "C:fts", "label": "Импорт", "value": "фармацевтические субстанции импортируются из Индии и Китая", "topics": ["trade", "fx", "logistics"]},
+        {"id": "C:has_guarantee", "label": "Банковские гарантии", "value": "используются в государственных закупках", "topics": ["credit", "regulation"]}
+      ],
+      "data_gaps": ["Нет данных о запасах импортных субстанций"]
+    }
+  ]
+}
