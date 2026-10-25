@@ -130,3 +130,117 @@ WHERE a.duplicate_of IS NULL AND a.published_at >= @since AND b.relevance_score 
 GROUP BY t.code, t.name
 ORDER BY articles DESC
 LIMIT 10;
+
+-- Техническая стабильность полного агентного анализа текущего пользователя.
+-- name: UserQualityRunStats :one
+WITH runs AS (
+  SELECT * FROM analysis_runs
+  WHERE user_id = @user_id AND kind = 'analyze' AND started_at >= @since
+)
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+       count(*) FILTER (WHERE status = 'failed')::int AS failed,
+       count(*) FILTER (WHERE error ILIKE '%неверном формате%' OR error ILIKE '%JSON%')::int AS json_errors,
+       count(*) FILTER (WHERE error ILIKE '%обрезан%' OR EXISTS (
+         SELECT 1 FROM jsonb_array_elements(steps) s WHERE s->>'finish_reason' = 'length'
+       ))::int AS truncated,
+       count(*) FILTER (WHERE error ILIKE '%время ожидания%' OR error ILIKE '%deadline exceeded%' OR error ILIKE '%timeout%')::int AS timeouts,
+       count(*) FILTER (WHERE error ILIKE '%ключ%отклон%' OR error ILIKE '%авторизац%')::int AS auth_errors,
+       count(*) FILTER (WHERE error ILIKE '%лимит%' OR error ILIKE '%rate%')::int AS rate_limited,
+       coalesce(round(avg(extract(epoch FROM (finished_at - started_at)) * 1000)
+         FILTER (WHERE finished_at IS NOT NULL)), 0)::bigint AS avg_latency_ms,
+       coalesce(round((percentile_cont(0.95) WITHIN GROUP (
+         ORDER BY extract(epoch FROM (finished_at - started_at)) * 1000
+       ) FILTER (WHERE finished_at IS NOT NULL))::numeric), 0)::bigint AS p95_latency_ms,
+       coalesce(round(avg(prompt_tokens + completion_tokens)), 0)::int AS avg_tokens,
+       coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint AS total_tokens,
+       coalesce(round(avg(jsonb_array_length(steps))), 0)::int AS avg_steps
+FROM runs;
+
+-- name: UserQualityStepStats :one
+WITH runs AS (
+  SELECT * FROM analysis_runs
+  WHERE user_id = @user_id AND kind = 'analyze' AND started_at >= @since
+), step_rows AS (
+  SELECT s
+  FROM runs CROSS JOIN LATERAL jsonb_array_elements(steps) s
+)
+SELECT count(*) FILTER (WHERE coalesce(s->>'model', '') <> '')::int AS llm_steps,
+       count(*) FILTER (WHERE coalesce((s->>'cached')::boolean, false))::int AS cached_steps,
+       count(*) FILTER (WHERE s->>'name' = 'self_check')::int AS self_checks,
+       count(*) FILTER (WHERE s->>'name' = 'self_check' AND s->>'status' = 'ok'
+         AND coalesce((s->'detail'->>'passed')::boolean, false))::int AS self_check_passed,
+       count(*) FILTER (WHERE s->>'name' = 'revise')::int AS revisions,
+       coalesce(sum(CASE WHEN jsonb_typeof(s->'detail'->'validation_notes') = 'array'
+         THEN jsonb_array_length(s->'detail'->'validation_notes') ELSE 0 END), 0)::int AS validator_corrections
+FROM step_rows;
+
+-- Grounding и наполненность сохранённых полных анализов.
+-- name: UserQualityAnalysisStats :one
+WITH fulls AS (
+  SELECT pa.* FROM personal_analyses pa
+  WHERE pa.user_id = @user_id AND pa.depth = 'full' AND pa.method = 'llm' AND pa.created_at >= @since
+)
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE jsonb_array_length(coalesce(result->'insight'->'bank_view', '[]'::jsonb)) > 0)::int AS with_bank_view,
+       count(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM jsonb_array_elements(coalesce(result->'insight'->'evidence_sources', '[]'::jsonb)) e
+         WHERE e->>'type' = 'company_data'
+       ))::int AS with_company_facts,
+       count(*) FILTER (WHERE EXISTS (
+         SELECT 1 FROM jsonb_array_elements(coalesce(result->'insight'->'validation_notes', '[]'::jsonb)) n
+         WHERE n #>> '{}' ILIKE '%доработан после самопроверки%'
+       ))::int AS revised,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'evidence_sources', '[]'::jsonb)))), 0)::numeric(10,2) AS avg_sources,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'risks', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_risks,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'opportunities', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_opportunities,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'recommended_actions', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_actions,
+       coalesce(round(avg(jsonb_array_length(coalesce(result->'insight'->'validation_notes', '[]'::jsonb))), 2), 0)::numeric(10,2) AS avg_validation_notes
+FROM fulls;
+
+-- name: UserQualityFeedbackStats :one
+SELECT count(*)::int AS total,
+       count(*) FILTER (WHERE rating = 1)::int AS positive,
+       count(*) FILTER (WHERE rating = -1)::int AS negative,
+       count(*) FILTER (WHERE comment <> '')::int AS with_comment
+FROM feedback
+WHERE user_id = @user_id AND created_at >= @since;
+
+-- name: UserQualityDaily :many
+SELECT date_trunc('day', started_at)::timestamptz AS day,
+       count(*)::int AS runs,
+       count(*) FILTER (WHERE status = 'succeeded')::int AS succeeded,
+       count(*) FILTER (WHERE status = 'failed')::int AS failed,
+       coalesce(sum(prompt_tokens + completion_tokens), 0)::bigint AS tokens,
+       coalesce(round(avg(extract(epoch FROM (finished_at - started_at)) * 1000)
+         FILTER (WHERE finished_at IS NOT NULL)), 0)::bigint AS avg_latency_ms
+FROM analysis_runs
+WHERE user_id = @user_id AND kind = 'analyze' AND started_at >= @since
+GROUP BY 1 ORDER BY 1;
+
+-- Токены конкретной модели берутся из трассы шага, а не из итога запуска.
+-- name: UserQualityModels :many
+WITH step_rows AS (
+  SELECT s
+  FROM analysis_runs r CROSS JOIN LATERAL jsonb_array_elements(r.steps) s
+  WHERE r.user_id = @user_id AND r.kind = 'analyze' AND r.started_at >= @since
+)
+SELECT (s->>'model')::text AS model,
+       count(*)::int AS calls,
+       coalesce(sum(coalesce((s->>'tokens')::int, 0)), 0)::bigint AS tokens,
+       count(*) FILTER (WHERE s->>'status' = 'error')::int AS errors,
+       count(*) FILTER (WHERE coalesce((s->>'cached')::boolean, false))::int AS cached
+FROM step_rows
+WHERE coalesce(s->>'model', '') <> ''
+GROUP BY 1 ORDER BY calls DESC, model;
+
+-- name: UserQualityPromptVersions :many
+SELECT coalesce(nullif(pa.result->>'prompt_version', ''), 'unknown')::text AS prompt_version,
+       count(*)::int AS analyses,
+       coalesce(round(avg(pa.relevance_score)), 0)::int AS avg_relevance,
+       count(f.id) FILTER (WHERE f.rating = 1)::int AS positive,
+       count(f.id) FILTER (WHERE f.rating = -1)::int AS negative
+FROM personal_analyses pa
+LEFT JOIN feedback f ON f.analysis_id = pa.id
+WHERE pa.user_id = @user_id AND pa.depth = 'full' AND pa.method = 'llm' AND pa.created_at >= @since
+GROUP BY 1 ORDER BY analyses DESC, prompt_version;

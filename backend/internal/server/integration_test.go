@@ -299,6 +299,11 @@ func TestEndToEnd(t *testing.T) {
 		t.Fatal("сохранённые")
 	}
 	cfo.must("POST", "/api/articles/"+articleID+"/feedback", map[string]any{"rating": 1}, 200)
+	quality := cfo.must("GET", "/api/analytics/quality?period=30d", nil, 200)
+	if quality["runs"].(map[string]any)["total"].(float64) < 1 ||
+		quality["feedback"].(map[string]any)["helpfulness_rate"].(float64) != 100 {
+		t.Fatalf("метрики качества: %v", quality)
+	}
 	cfo.must("DELETE", "/api/articles/"+articleID+"/save", nil, 200)
 
 	// Разграничение доступа.
