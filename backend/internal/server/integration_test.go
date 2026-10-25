@@ -22,6 +22,8 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5/stdlib"
+	"github.com/pressly/goose/v3"
 
 	"github.com/alfainsight/backend/internal/db/dbq"
 	"github.com/alfainsight/backend/internal/news"
@@ -179,6 +181,17 @@ func TestEndToEnd(t *testing.T) {
 	}
 	if err := db.Migrate(pool, migrations.FS); err != nil {
 		t.Fatal(err)
+	}
+	// Все миграции обратимы: откат до пустой схемы и повторное применение.
+	sqlDB := stdlib.OpenDBFromPool(pool)
+	goose.SetBaseFS(migrations.FS)
+	goose.SetLogger(goose.NopLogger())
+	if err := goose.DownTo(sqlDB, ".", 0); err != nil {
+		t.Fatalf("откат миграций: %v", err)
+	}
+	_ = sqlDB.Close()
+	if err := db.Migrate(pool, migrations.FS); err != nil {
+		t.Fatalf("повторное применение миграций: %v", err)
 	}
 	// Тестовые записи (не данные кейса): две компании, материал банка, новость.
 	fixture := `

@@ -53,6 +53,16 @@ Next.js ── same-origin /api/* ──→ Go API
 
 **API:** OpenAPI-контракт — `backend/api/openapi.yaml`, доступен в запущенном сервисе по `/api/openapi.yaml`.
 
+## Документация
+
+| Документ | Содержание |
+|---|---|
+| [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) | схема компонентов, агентный конвейер, модель данных, механизмы безопасности AI-компонентов, масштабирование |
+| [docs/EXTENDING.md](docs/EXTENDING.md) | как добавить источник, материал банка, отрасль, тип клиента, роль, тему, промпт, валидатор, быстрый вопрос |
+| [docs/OPERATIONS.md](docs/OPERATIONS.md) | версии, проверка изменений перед релизом, выпуск, выкатка и откат модели, откат версии со схемой БД, мониторинг качества |
+| [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) | чек-лист развёртывания локально и на внешнем сервере, smoke-проверка |
+| [data/evaluation/README.md](data/evaluation/README.md) | holdout-набор и запуск evaluation |
+
 ## Как формируется бизнес-контекст
 
 `backend/internal/companies/` преобразует исходные данные в проверяемые факты с идентификаторами вида `C:okved`, `C:region`, `C:has_loan`. Профиль включает:
@@ -296,6 +306,8 @@ docker compose --profile import run --rm importer
 | Подключиться к БД | `psql postgres://alfa:alfa@localhost:5433/alfainsight` |
 | Проверить список моделей без расхода токенов | `docker compose run --rm api llmcheck` |
 | Сделать один тестовый LLM-вызов | `docker compose run --rm api llmcheck -test` |
+| Статус миграций БД | `docker compose run --rm api migrate status` |
+| Откатить схему до версии N | `docker compose run --rm api migrate down-to N` (сначала резервная копия) |
 | Удалить контейнеры и данные БД | `docker compose down -v` |
 
 `llmcheck -test` расходует общий бюджет ключа; не используйте его как обычную проверку сборки.
@@ -401,6 +413,8 @@ go run ./cmd/eval -data ../data/evaluation -mode live -confirm-live \
 5. Выполнить ограниченный live evaluation при доступном бюджете.
 6. Выпустить новую версию и наблюдать метрики по модели и `PromptVersion`.
 
+Подробный порядок, включая проверку изменений, выкатку новой модели и откат, — в [docs/OPERATIONS.md](docs/OPERATIONS.md).
+
 ## Структура репозитория
 
 ```text
@@ -409,6 +423,7 @@ backend/
   cmd/importer/                    импорт CSV, аналитики и RSS
   cmd/llmcheck/                    диагностика шлюза и моделей
   cmd/eval/                        offline/live evaluation
+  cmd/migrate/                     статус и откат схемы БД
   api/openapi.yaml                 контракт API
   internal/agent/                  оркестрация агентного workflow
   internal/analysis/               промпты, схемы и валидация
@@ -426,6 +441,7 @@ frontend/src/
 data/research/                      тексты материалов Альфа-Банка
 data/evaluation/                    синтетический holdout и разметка
 data/raw/                           исходные CSV, не отслеживаются Git
+docs/                               архитектура, расширение, сопровождение, развёртывание
 scripts/ocr_research.sh             подготовка исследовательских PDF
 ```
 
